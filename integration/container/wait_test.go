@@ -1,13 +1,14 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"testing"
 	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -42,7 +43,7 @@ func TestWaitNonBlocked(t *testing.T) {
 
 			ctx := testutil.StartSpan(ctx, t)
 			containerID := container.Run(ctx, t, cli, container.WithCmd("sh", "-c", tc.cmd))
-			poll.WaitOn(t, container.IsInState(ctx, cli, containerID, "exited"), poll.WithTimeout(30*time.Second))
+			poll.WaitOn(t, container.IsInState(ctx, cli, containerID, containertypes.StateExited), poll.WithTimeout(30*time.Second))
 
 			waitResC, errC := cli.ContainerWait(ctx, containerID, "")
 			select {
@@ -86,7 +87,7 @@ func TestWaitBlocked(t *testing.T) {
 			containerID := container.Run(ctx, t, cli, container.WithCmd("sh", "-c", tc.cmd))
 			waitResC, errC := cli.ContainerWait(ctx, containerID, "")
 
-			err := cli.ContainerStop(ctx, containerID, containertypes.StopOptions{})
+			err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{})
 			assert.NilError(t, err)
 
 			select {
@@ -143,11 +144,11 @@ func TestWaitConditions(t *testing.T) {
 			containerID := container.Create(ctx, t, cli, opts...)
 			t.Logf("ContainerID = %v", containerID)
 
-			streams, err := cli.ContainerAttach(ctx, containerID, containertypes.AttachOptions{Stream: true, Stdin: true})
+			streams, err := cli.ContainerAttach(ctx, containerID, client.ContainerAttachOptions{Stream: true, Stdin: true})
 			assert.NilError(t, err)
 			defer streams.Close()
 
-			assert.NilError(t, cli.ContainerStart(ctx, containerID, containertypes.StartOptions{}))
+			assert.NilError(t, cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}))
 			waitResC, errC := cli.ContainerWait(ctx, containerID, tc.waitCond)
 			select {
 			case err := <-errC:
@@ -158,7 +159,7 @@ func TestWaitConditions(t *testing.T) {
 			}
 
 			info, _ := cli.ContainerInspect(ctx, containerID)
-			assert.Equal(t, "running", info.State.Status)
+			assert.Equal(t, info.State.Status, containertypes.StateRunning)
 
 			_, err = streams.Conn.Write([]byte("\n"))
 			assert.NilError(t, err)
@@ -169,8 +170,8 @@ func TestWaitConditions(t *testing.T) {
 			case waitRes := <-waitResC:
 				assert.Check(t, is.Equal(int64(99), waitRes.StatusCode))
 			case <-time.After(StopContainerWindowsPollTimeout):
-				info, _ := cli.ContainerInspect(ctx, containerID)
-				t.Fatalf("Timed out waiting for container exit code (status = %q)", info.State.Status)
+				ctr, _ := cli.ContainerInspect(ctx, containerID)
+				t.Fatalf("Timed out waiting for container exit code (status = %q)", ctr.State.Status)
 			}
 		})
 	}
@@ -208,7 +209,7 @@ func TestWaitRestartedContainer(t *testing.T) {
 			containerID := container.Run(ctx, t, cli,
 				container.WithCmd("sh", "-c", "trap 'exit 5' SIGTERM; while true; do sleep 0.1; done"),
 			)
-			defer cli.ContainerRemove(ctx, containerID, containertypes.RemoveOptions{Force: true})
+			defer cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 
 			// Container is running now, wait for exit
 			waitResC, errC := cli.ContainerWait(ctx, containerID, tc.waitCond)
@@ -220,7 +221,7 @@ func TestWaitRestartedContainer(t *testing.T) {
 				timeout = 0
 			}
 
-			err := cli.ContainerRestart(ctx, containerID, containertypes.StopOptions{Timeout: &timeout, Signal: "SIGTERM"})
+			err := cli.ContainerRestart(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout, Signal: "SIGTERM"})
 			assert.NilError(t, err)
 
 			select {

@@ -1,12 +1,12 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/pkg/stringid"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -32,7 +32,7 @@ func TestRenameLinkedContainer(t *testing.T) {
 
 	container.Run(ctx, t, apiClient, container.WithName(aName))
 
-	err = apiClient.ContainerRemove(ctx, bID, containertypes.RemoveOptions{Force: true})
+	err = apiClient.ContainerRemove(ctx, bID, client.ContainerRemoveOptions{Force: true})
 	assert.NilError(t, err)
 
 	bID = container.Run(ctx, t, apiClient, container.WithName(bName), container.WithLinks(aName))
@@ -53,7 +53,7 @@ func TestRenameStoppedContainer(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Check(t, is.Equal("/"+oldName, inspect.Name))
 
-	newName := "new_name" + stringid.GenerateRandomID()
+	newName := "new_name" + cID // using cID as random suffix
 	err = apiClient.ContainerRename(ctx, oldName, newName)
 	assert.NilError(t, err)
 
@@ -69,7 +69,7 @@ func TestRenameRunningContainerAndReuse(t *testing.T) {
 	oldName := "first_name" + t.Name()
 	cID := container.Run(ctx, t, apiClient, container.WithName(oldName))
 
-	newName := "new_name" + stringid.GenerateRandomID()
+	newName := "new_name" + cID // using cID as random suffix
 	err := apiClient.ContainerRename(ctx, oldName, newName)
 	assert.NilError(t, err)
 
@@ -114,7 +114,7 @@ func TestRenameAnonymousContainer(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	networkName := "network1" + t.Name()
-	_, err := apiClient.NetworkCreate(ctx, networkName, network.CreateOptions{})
+	_, err := apiClient.NetworkCreate(ctx, networkName, client.NetworkCreateOptions{})
 
 	assert.NilError(t, err)
 	cID := container.Run(ctx, t, apiClient, func(c *container.TestContainerConfig) {
@@ -129,9 +129,9 @@ func TestRenameAnonymousContainer(t *testing.T) {
 	assert.NilError(t, err)
 	// Stop/Start the container to get registered
 	// FIXME(vdemeester) this is a really weird behavior as it fails otherwise
-	err = apiClient.ContainerStop(ctx, container1Name, containertypes.StopOptions{})
+	err = apiClient.ContainerStop(ctx, container1Name, client.ContainerStopOptions{})
 	assert.NilError(t, err)
-	err = apiClient.ContainerStart(ctx, container1Name, containertypes.StartOptions{})
+	err = apiClient.ContainerStart(ctx, container1Name, client.ContainerStartOptions{})
 	assert.NilError(t, err)
 
 	count := "-c"
@@ -144,7 +144,7 @@ func TestRenameAnonymousContainer(t *testing.T) {
 		}
 		c.HostConfig.NetworkMode = containertypes.NetworkMode(networkName)
 	}, container.WithCmd("ping", count, "1", container1Name))
-	poll.WaitOn(t, container.IsInState(ctx, apiClient, cID, "exited"))
+	poll.WaitOn(t, container.IsInState(ctx, apiClient, cID, containertypes.StateExited))
 
 	inspect, err := apiClient.ContainerInspect(ctx, cID)
 	assert.NilError(t, err)
@@ -199,7 +199,7 @@ func TestRenameContainerTwice(t *testing.T) {
 	ctrName := "c0"
 	container.Run(ctx, t, apiClient, container.WithName("c0"))
 	defer func() {
-		container.Remove(ctx, t, apiClient, ctrName, containertypes.RemoveOptions{
+		container.Remove(ctx, t, apiClient, ctrName, client.ContainerRemoveOptions{
 			Force: true,
 		})
 	}()

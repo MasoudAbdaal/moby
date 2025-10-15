@@ -6,18 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/integration-cli/cli/build"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/integration-cli/cli/build"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 )
 
 func (s *DockerAPISuite) TestAPIImagesSaveAndLoad(c *testing.T) {
 	testRequires(c, Network)
-	buildImageSuccessfully(c, "saveandload", build.WithDockerfile("FROM busybox\nENV FOO bar"))
+	cli.BuildCmd(c, "saveandload", build.WithDockerfile("FROM busybox\nENV FOO bar"))
 	id := getIDByName(c, "saveandload")
 
 	ctx := testutil.GetContext(c)
@@ -46,45 +45,19 @@ func (s *DockerAPISuite) TestAPIImagesDelete(c *testing.T) {
 		testRequires(c, Network)
 	}
 	name := "test-api-images-delete"
-	buildImageSuccessfully(c, name, build.WithDockerfile("FROM busybox\nENV FOO bar"))
+	cli.BuildCmd(c, name, build.WithDockerfile("FROM busybox\nENV FOO bar"))
 	id := getIDByName(c, name)
 
 	cli.DockerCmd(c, "tag", name, "test:tag1")
 
-	_, err = apiClient.ImageRemove(testutil.GetContext(c), id, image.RemoveOptions{})
+	_, err = apiClient.ImageRemove(testutil.GetContext(c), id, client.ImageRemoveOptions{})
 	assert.ErrorContains(c, err, "unable to delete")
 
-	_, err = apiClient.ImageRemove(testutil.GetContext(c), "test:noexist", image.RemoveOptions{})
+	_, err = apiClient.ImageRemove(testutil.GetContext(c), "test:noexist", client.ImageRemoveOptions{})
 	assert.ErrorContains(c, err, "No such image")
 
-	_, err = apiClient.ImageRemove(testutil.GetContext(c), "test:tag1", image.RemoveOptions{})
+	_, err = apiClient.ImageRemove(testutil.GetContext(c), "test:tag1", client.ImageRemoveOptions{})
 	assert.NilError(c, err)
-}
-
-func (s *DockerAPISuite) TestAPIImagesHistory(c *testing.T) {
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
-	assert.NilError(c, err)
-	defer apiClient.Close()
-
-	if testEnv.DaemonInfo.OSType != "windows" {
-		testRequires(c, Network)
-	}
-	name := "test-api-images-history"
-	buildImageSuccessfully(c, name, build.WithDockerfile("FROM busybox\nENV FOO bar"))
-	id := getIDByName(c, name)
-
-	historydata, err := apiClient.ImageHistory(testutil.GetContext(c), id)
-	assert.NilError(c, err)
-
-	assert.Assert(c, len(historydata) != 0)
-	var found bool
-	for _, tag := range historydata[0].Tags {
-		if tag == "test-api-images-history:latest" {
-			found = true
-			break
-		}
-	}
-	assert.Assert(c, found)
 }
 
 func (s *DockerAPISuite) TestAPIImagesImportBadSrc(c *testing.T) {
@@ -105,7 +78,7 @@ func (s *DockerAPISuite) TestAPIImagesImportBadSrc(c *testing.T) {
 
 	ctx := testutil.GetContext(c)
 	for _, te := range tt {
-		res, _, err := request.Post(ctx, strings.Join([]string{"/images/create?fromSrc=", te.fromSrc}, ""), request.JSON)
+		res, _, err := request.Post(ctx, "/images/create?fromSrc="+te.fromSrc, request.JSON)
 		assert.NilError(c, err)
 		assert.Equal(c, res.StatusCode, te.statusExp)
 		assert.Equal(c, res.Header.Get("Content-Type"), "application/json")
@@ -129,7 +102,7 @@ func (s *DockerAPISuite) TestAPIImagesSizeCompatibility(c *testing.T) {
 	apiclient := testEnv.APIClient()
 	defer apiclient.Close()
 
-	images, err := apiclient.ImageList(testutil.GetContext(c), image.ListOptions{})
+	images, err := apiclient.ImageList(testutil.GetContext(c), client.ImageListOptions{})
 	assert.NilError(c, err)
 	assert.Assert(c, len(images) != 0)
 	for _, img := range images {
@@ -140,7 +113,7 @@ func (s *DockerAPISuite) TestAPIImagesSizeCompatibility(c *testing.T) {
 	assert.NilError(c, err)
 	defer apiclient.Close()
 
-	v124Images, err := apiclient.ImageList(testutil.GetContext(c), image.ListOptions{})
+	v124Images, err := apiclient.ImageList(testutil.GetContext(c), client.ImageListOptions{})
 	assert.NilError(c, err)
 	assert.Assert(c, len(v124Images) != 0)
 	for _, img := range v124Images {

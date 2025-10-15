@@ -1,12 +1,12 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/containerd/log"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/container"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/v2/daemon/container"
 )
 
 // ContainerPause pauses a container
@@ -31,12 +31,12 @@ func (daemon *Daemon) containerPause(container *container.Container) error {
 	}
 
 	// We cannot Pause the container which is already paused
-	if container.Paused {
+	if container.State.Paused {
 		return errNotPaused(container.ID)
 	}
 
 	// We cannot Pause the container which is restarting
-	if container.Restarting {
+	if container.State.Restarting {
 		return errContainerIsRestarting(container.ID)
 	}
 
@@ -44,7 +44,7 @@ func (daemon *Daemon) containerPause(container *container.Container) error {
 		return fmt.Errorf("cannot pause container %s: %s", container.ID, err)
 	}
 
-	container.Paused = true
+	container.State.Paused = true
 	daemon.setStateCounter(container)
 	daemon.updateHealthMonitor(container)
 	daemon.LogContainerEvent(container, events.ActionPause)

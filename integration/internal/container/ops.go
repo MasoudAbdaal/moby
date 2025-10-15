@@ -2,15 +2,18 @@ package container
 
 import (
 	"maps"
+	"net/netip"
 	"slices"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+// ConfigOpt is an option to apply to a container.
+type ConfigOpt func(*TestContainerConfig)
 
 // WithName sets the name of the container
 func WithName(name string) func(*TestContainerConfig) {
@@ -55,9 +58,9 @@ func WithNetworkMode(mode string) func(*TestContainerConfig) {
 }
 
 // WithDNS sets external DNS servers for the container
-func WithDNS(dns []string) func(*TestContainerConfig) {
+func WithDNS(dns []netip.Addr) func(*TestContainerConfig) {
 	return func(c *TestContainerConfig) {
-		c.HostConfig.DNS = append([]string(nil), dns...)
+		c.HostConfig.DNS = append([]netip.Addr(nil), dns...)
 	}
 }
 
@@ -71,17 +74,18 @@ func WithSysctls(sysctls map[string]string) func(*TestContainerConfig) {
 // WithExposedPorts sets the exposed ports of the container
 func WithExposedPorts(ports ...string) func(*TestContainerConfig) {
 	return func(c *TestContainerConfig) {
-		c.Config.ExposedPorts = map[nat.Port]struct{}{}
+		c.Config.ExposedPorts = map[network.Port]struct{}{}
 		for _, port := range ports {
-			c.Config.ExposedPorts[nat.Port(port)] = struct{}{}
+			p, _ := network.ParsePort(port)
+			c.Config.ExposedPorts[p] = struct{}{}
 		}
 	}
 }
 
 // WithPortMap sets/replaces port mappings.
-func WithPortMap(pm nat.PortMap) func(*TestContainerConfig) {
+func WithPortMap(pm network.PortMap) func(*TestContainerConfig) {
 	return func(c *TestContainerConfig) {
-		c.HostConfig.PortBindings = nat.PortMap{}
+		c.HostConfig.PortBindings = network.PortMap{}
 		for p, b := range pm {
 			c.HostConfig.PortBindings[p] = slices.Clone(b)
 		}
@@ -170,7 +174,7 @@ func WithIPv4(networkName, ip string) func(*TestContainerConfig) {
 		if c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig == nil {
 			c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig = &network.EndpointIPAMConfig{}
 		}
-		c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig.IPv4Address = ip
+		c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig.IPv4Address = netip.MustParseAddr(ip)
 	}
 }
 
@@ -186,7 +190,7 @@ func WithIPv6(networkName, ip string) func(*TestContainerConfig) {
 		if c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig == nil {
 			c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig = &network.EndpointIPAMConfig{}
 		}
-		c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig.IPv6Address = ip
+		c.NetworkingConfig.EndpointsConfig[networkName].IPAMConfig.IPv6Address = netip.MustParseAddr(ip)
 	}
 }
 
@@ -359,5 +363,12 @@ func WithStopSignal(stopSignal string) func(c *TestContainerConfig) {
 func WithContainerWideMacAddress(address string) func(c *TestContainerConfig) {
 	return func(c *TestContainerConfig) {
 		c.Config.MacAddress = address //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.44.
+	}
+}
+
+// WithHostConfig sets a custom [container.HostConfig] for the container.
+func WithHostConfig(hc *container.HostConfig) func(c *TestContainerConfig) {
+	return func(c *TestContainerConfig) {
+		c.HostConfig = hc
 	}
 }

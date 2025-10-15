@@ -1,15 +1,15 @@
 package networking
 
 import (
+	"net/netip"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/network"
-	"github.com/docker/docker/libnetwork/drivers/bridge"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/integration/internal/network"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -47,10 +47,10 @@ func TestMACAddrOnRestart(t *testing.T) {
 		container.WithImage("busybox:latest"),
 		container.WithCmd("top"),
 		container.WithNetworkMode(netName))
-	defer c.ContainerRemove(ctx, id1, containertypes.RemoveOptions{
+	defer c.ContainerRemove(ctx, id1, client.ContainerRemoveOptions{
 		Force: true,
 	})
-	err := c.ContainerStop(ctx, ctr1Name, containertypes.StopOptions{})
+	err := c.ContainerStop(ctx, ctr1Name, client.ContainerStopOptions{})
 	assert.Assert(t, is.Nil(err))
 
 	// Start a second container, giving the daemon a chance to recycle the first container's
@@ -61,12 +61,12 @@ func TestMACAddrOnRestart(t *testing.T) {
 		container.WithImage("busybox:latest"),
 		container.WithCmd("top"),
 		container.WithNetworkMode(netName))
-	defer c.ContainerRemove(ctx, id2, containertypes.RemoveOptions{
+	defer c.ContainerRemove(ctx, id2, client.ContainerRemoveOptions{
 		Force: true,
 	})
 
 	// Restart the first container.
-	err = c.ContainerStart(ctx, ctr1Name, containertypes.StartOptions{})
+	err = c.ContainerStart(ctx, ctr1Name, client.ContainerStartOptions{})
 	assert.Assert(t, is.Nil(err))
 
 	// Check that the containers ended up with different MAC addresses.
@@ -109,7 +109,7 @@ func TestCfgdMACAddrOnRestart(t *testing.T) {
 		container.WithCmd("top"),
 		container.WithNetworkMode(netName),
 		container.WithMacAddress(netName, wantMAC))
-	defer c.ContainerRemove(ctx, id1, containertypes.RemoveOptions{
+	defer c.ContainerRemove(ctx, id1, client.ContainerRemoveOptions{
 		Force: true,
 	})
 
@@ -119,7 +119,7 @@ func TestCfgdMACAddrOnRestart(t *testing.T) {
 
 	startAndCheck := func() {
 		t.Helper()
-		err := c.ContainerStart(ctx, ctr1Name, containertypes.StartOptions{})
+		err := c.ContainerStart(ctx, ctr1Name, client.ContainerStartOptions{})
 		assert.Assert(t, is.Nil(err))
 		inspect = container.Inspect(ctx, t, c, ctr1Name)
 		gotMAC = inspect.NetworkSettings.Networks[netName].MacAddress
@@ -127,12 +127,12 @@ func TestCfgdMACAddrOnRestart(t *testing.T) {
 	}
 
 	// Restart the container, check that the MAC address is restored.
-	err := c.ContainerStop(ctx, ctr1Name, containertypes.StopOptions{})
+	err := c.ContainerStop(ctx, ctr1Name, client.ContainerStopOptions{})
 	assert.Assert(t, is.Nil(err))
 	startAndCheck()
 
 	// Restart the daemon, check that the MAC address is restored.
-	err = c.ContainerStop(ctx, ctr1Name, containertypes.StopOptions{})
+	err = c.ContainerStop(ctx, ctr1Name, client.ContainerStopOptions{})
 	assert.Assert(t, is.Nil(err))
 	d.Restart(t)
 	startAndCheck()
@@ -221,7 +221,7 @@ func TestInspectCfgdMAC(t *testing.T) {
 				}
 			}
 			id := container.Create(ctx, t, c, opts...)
-			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -272,11 +272,11 @@ func TestWatchtowerCreate(t *testing.T) {
 		container.WithContainerWideMacAddress(ctrMAC),
 		container.WithIPv4(netName, ctrIP),
 	)
-	defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 	// Check that the container got the expected addresses.
 	inspect := container.Inspect(ctx, t, c, ctrName)
 	netSettings := inspect.NetworkSettings.Networks[netName]
-	assert.Check(t, is.Equal(netSettings.IPAddress, ctrIP))
+	assert.Check(t, is.Equal(netSettings.IPAddress, netip.MustParseAddr(ctrIP)))
 	assert.Check(t, is.Equal(netSettings.MacAddress, ctrMAC))
 }

@@ -28,10 +28,16 @@ import (
 	"github.com/moby/buildkit/source"
 	srctypes "github.com/moby/buildkit/source/types"
 	"github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/cachedigest"
 	"github.com/moby/buildkit/util/tracing"
 	"github.com/moby/buildkit/version"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
+)
+
+const (
+	HTTPAuthHeaderSecretPrefix = "HTTP_AUTH_HEADER_"
+	HTTPAuthTokenSecretPrefix  = "HTTP_AUTH_TOKEN_"
 )
 
 // supportedUserHeaders defines supported user-defined header fields. Fields
@@ -193,7 +199,10 @@ func (hs *httpSourceHandler) formatCacheKey(filename string, dgst digest.Digest,
 	if err != nil {
 		return dgst
 	}
-	return digest.FromBytes(dt)
+	if v, err := cachedigest.FromBytes(dt, cachedigest.TypeJSON); err == nil {
+		return v
+	}
+	return dgst
 }
 
 func (hs *httpSourceHandler) CacheKey(ctx context.Context, g session.Group, index int) (string, string, solver.CacheOpts, bool, error) {
@@ -398,7 +407,7 @@ func (hs *httpSourceHandler) save(ctx context.Context, resp *http.Response, s se
 	uid := hs.src.UID
 	gid := hs.src.GID
 	if idmap := mount.IdentityMapping(); idmap != nil {
-		uid, gid, err = idmap.ToHost(int(uid), int(gid))
+		uid, gid, err = idmap.ToHost(uid, gid)
 		if err != nil {
 			return nil, "", err
 		}
@@ -496,7 +505,7 @@ func (hs *httpSourceHandler) Snapshot(ctx context.Context, g session.Group) (cac
 }
 
 func (hs *httpSourceHandler) newHTTPRequest(ctx context.Context, g session.Group) (*http.Request, error) {
-	req, err := http.NewRequest("GET", hs.src.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, hs.src.URL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -506,18 +515,36 @@ func (hs *httpSourceHandler) newHTTPRequest(ctx context.Context, g session.Group
 		req.Header.Set(field.Name, field.Value)
 	}
 
+	type authSecret struct {
+		name  string
+		token bool
+	}
+
+	var secretNames []authSecret
 	if hs.src.AuthHeaderSecret != "" {
+		secretNames = append(secretNames, authSecret{name: hs.src.AuthHeaderSecret})
+	} else {
+		u, err := url.Parse(hs.src.URL)
+		if err == nil {
+			secretNames = append(secretNames, authSecret{name: HTTPAuthHeaderSecretPrefix + u.Hostname()})
+			secretNames = append(secretNames, authSecret{name: HTTPAuthTokenSecretPrefix + u.Hostname(), token: true})
+		}
+	}
+
+	for _, secret := range secretNames {
 		err := hs.sm.Any(ctx, g, func(ctx context.Context, _ string, caller session.Caller) error {
-			dt, err := secrets.GetSecret(ctx, caller, hs.src.AuthHeaderSecret)
+			dt, err := secrets.GetSecret(ctx, caller, secret.name)
 			if err != nil {
 				return err
 			}
-
-			req.Header.Set("Authorization", string(dt))
-
+			v := string(dt)
+			if secret.token {
+				v = "Bearer " + v
+			}
+			req.Header.Set("Authorization", v)
 			return nil
 		})
-		if err != nil {
+		if err != nil && hs.src.AuthHeaderSecret != "" {
 			return nil, errors.Wrapf(err, "failed to retrieve HTTP auth secret %s", hs.src.AuthHeaderSecret)
 		}
 	}

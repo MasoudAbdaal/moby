@@ -17,9 +17,9 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/pkg/progress"
-	"github.com/docker/docker/pkg/stringid"
+	"github.com/moby/moby/api/pkg/progress"
+	"github.com/moby/moby/v2/daemon/internal/stringid"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -182,13 +182,14 @@ func (p *pullProgress) UpdateProgress(ctx context.Context, ongoing *jobs, out pr
 	for idx, desc := range p.layers {
 		sn, err := findMatchingSnapshot(ctx, p.snapshotter, desc)
 		if err != nil {
-			if errdefs.IsNotFound(err) {
+			if cerrdefs.IsNotFound(err) {
 				continue
 			}
 			return err
 		}
 
-		if sn.Kind == snapshots.KindActive {
+		switch sn.Kind {
+		case snapshots.KindActive:
 			if p.unpackStart == nil {
 				p.unpackStart = make(map[digest.Digest]time.Time)
 			}
@@ -209,7 +210,7 @@ func (p *pullProgress) UpdateProgress(ctx context.Context, ongoing *jobs, out pr
 					Current: 1 + seconds,
 					Units:   "s",
 				})
-		} else if sn.Kind == snapshots.KindCommitted {
+		case snapshots.KindCommitted:
 			out.WriteProgress(progress.Progress{
 				ID:         stringid.TruncateID(desc.Digest.Encoded()),
 				Action:     "Pull complete",
@@ -218,6 +219,8 @@ func (p *pullProgress) UpdateProgress(ctx context.Context, ongoing *jobs, out pr
 			})
 
 			committedIdx = append(committedIdx, idx)
+		case snapshots.KindUnknown, snapshots.KindView:
+			// Ignore other snapshot kinds
 		}
 	}
 

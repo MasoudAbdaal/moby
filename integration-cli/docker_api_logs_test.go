@@ -11,12 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 )
 
@@ -63,7 +62,7 @@ func (s *DockerAPISuite) TestLogsAPINoStdoutNorStderr(c *testing.T) {
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
-	_, err = apiClient.ContainerLogs(testutil.GetContext(c), name, container.LogsOptions{})
+	_, err = apiClient.ContainerLogs(testutil.GetContext(c), name, client.ContainerLogsOptions{})
 	assert.ErrorContains(c, err, "Bad parameters: you must choose at least one stream")
 }
 
@@ -106,7 +105,7 @@ func (s *DockerAPISuite) TestLogsAPIUntilFutureFollow(c *testing.T) {
 		c.Fatal(err)
 	}
 
-	reader, err := apiClient.ContainerLogs(testutil.GetContext(c), name, container.LogsOptions{
+	reader, err := apiClient.ContainerLogs(testutil.GetContext(c), name, client.ContainerLogsOptions{
 		Until:      until.Format(time.RFC3339Nano),
 		Follow:     true,
 		ShowStdout: true,
@@ -171,20 +170,20 @@ func (s *DockerAPISuite) TestLogsAPIUntil(c *testing.T) {
 		c.Fatal(err)
 	}
 
-	extractBody := func(c *testing.T, cfg container.LogsOptions) []string {
-		reader, err := apiClient.ContainerLogs(testutil.GetContext(c), name, cfg)
-		assert.NilError(c, err)
+	extractBody := func(t *testing.T, cfg client.ContainerLogsOptions) []string {
+		reader, err := apiClient.ContainerLogs(testutil.GetContext(t), name, cfg)
+		assert.NilError(t, err)
 
 		actualStdout := new(bytes.Buffer)
 		actualStderr := io.Discard
 		_, err = stdcopy.StdCopy(actualStdout, actualStderr, reader)
-		assert.NilError(c, err)
+		assert.NilError(t, err)
 
 		return strings.Split(actualStdout.String(), "\n")
 	}
 
 	// Get timestamp of second log line
-	allLogs := extractBody(c, container.LogsOptions{Timestamps: true, ShowStdout: true})
+	allLogs := extractBody(c, client.ContainerLogsOptions{Timestamps: true, ShowStdout: true})
 	assert.Assert(c, len(allLogs) >= 3)
 
 	t, err := time.Parse(time.RFC3339Nano, strings.Split(allLogs[1], " ")[0])
@@ -192,7 +191,7 @@ func (s *DockerAPISuite) TestLogsAPIUntil(c *testing.T) {
 	until := t.Format(time.RFC3339Nano)
 
 	// Get logs until the timestamp of second line, i.e. first two lines
-	logs := extractBody(c, container.LogsOptions{Timestamps: true, ShowStdout: true, Until: until})
+	logs := extractBody(c, client.ContainerLogsOptions{Timestamps: true, ShowStdout: true, Until: until})
 
 	// Ensure log lines after cut-off are excluded
 	logsString := strings.Join(logs, "\n")
@@ -208,22 +207,22 @@ func (s *DockerAPISuite) TestLogsAPIUntilDefaultValue(c *testing.T) {
 		c.Fatal(err)
 	}
 
-	extractBody := func(c *testing.T, cfg container.LogsOptions) []string {
-		reader, err := apiClient.ContainerLogs(testutil.GetContext(c), name, cfg)
-		assert.NilError(c, err)
+	extractBody := func(t *testing.T, cfg client.ContainerLogsOptions) []string {
+		reader, err := apiClient.ContainerLogs(testutil.GetContext(t), name, cfg)
+		assert.NilError(t, err)
 
 		actualStdout := new(bytes.Buffer)
 		actualStderr := io.Discard
 		_, err = stdcopy.StdCopy(actualStdout, actualStderr, reader)
-		assert.NilError(c, err)
+		assert.NilError(t, err)
 
 		return strings.Split(actualStdout.String(), "\n")
 	}
 
 	// Get timestamp of second log line
-	allLogs := extractBody(c, container.LogsOptions{Timestamps: true, ShowStdout: true})
+	allLogs := extractBody(c, client.ContainerLogsOptions{Timestamps: true, ShowStdout: true})
 
 	// Test with default value specified and parameter omitted
-	defaultLogs := extractBody(c, container.LogsOptions{Timestamps: true, ShowStdout: true, Until: "0"})
+	defaultLogs := extractBody(c, client.ContainerLogsOptions{Timestamps: true, ShowStdout: true, Until: "0"})
 	assert.DeepEqual(c, defaultLogs, allLogs)
 }

@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/integration-cli/cli/build"
-	"github.com/docker/docker/testutil"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/integration-cli/cli/build"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/icmd"
@@ -25,12 +25,12 @@ type DockerCLIVolumeSuite struct {
 	ds *DockerSuite
 }
 
-func (s *DockerCLIVolumeSuite) TearDownTest(ctx context.Context, c *testing.T) {
-	s.ds.TearDownTest(ctx, c)
+func (s *DockerCLIVolumeSuite) TearDownTest(ctx context.Context, t *testing.T) {
+	s.ds.TearDownTest(ctx, t)
 }
 
-func (s *DockerCLIVolumeSuite) OnTimeout(c *testing.T) {
-	s.ds.OnTimeout(c)
+func (s *DockerCLIVolumeSuite) OnTimeout(t *testing.T) {
+	s.ds.OnTimeout(t)
 }
 
 func (s *DockerCLIVolumeSuite) TestVolumeCLICreate(c *testing.T) {
@@ -66,7 +66,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeCLIInspectMulti(c *testing.T) {
 	cli.DockerCmd(c, "volume", "create", "test2")
 	cli.DockerCmd(c, "volume", "create", "test3")
 
-	result := dockerCmdWithResult("volume", "inspect", "--format={{ .Name }}", "test1", "test2", "doesnotexist", "test3")
+	result := cli.Docker(cli.Args("volume", "inspect", "--format={{ .Name }}", "test1", "test2", "doesnotexist", "test3"))
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
 		Err:      "No such volume: doesnotexist",
@@ -119,7 +119,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeLsFormatDefaultFormat(c *testing.T) {
 	assertVolumesInList(c, out, []string{"aaa default", "soo default", "test default"})
 }
 
-func assertVolumesInList(c *testing.T, out string, expected []string) {
+func assertVolumesInList(t *testing.T, out string, expected []string) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	for _, expect := range expected {
 		found := false
@@ -129,7 +129,7 @@ func assertVolumesInList(c *testing.T, out string, expected []string) {
 				break
 			}
 		}
-		assert.Assert(c, found, "Expected volume not found: %v, got: %v", expect, lines)
+		assert.Assert(t, found, "Expected volume not found: %v, got: %v", expect, lines)
 	}
 }
 
@@ -409,7 +409,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeCLIRmForce(c *testing.T) {
 }
 
 // TestVolumeCLIRmForceInUse verifies that repeated `docker volume rm -f` calls does not remove a volume
-// if it is in use. Test case for https://github.com/docker/docker/issues/31446
+// if it is in use. Test case for https://github.com/moby/moby/issues/31446
 func (s *DockerCLIVolumeSuite) TestVolumeCLIRmForceInUse(c *testing.T) {
 	const name = "testvolume"
 	id := cli.DockerCmd(c, "volume", "create", name).Stdout()
@@ -471,7 +471,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFrom(c *testing
 	testRequires(c, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
 		FROM busybox
 		VOLUME ["/tmp/data"]`))
 
@@ -512,7 +512,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndBind(c *
 	testRequires(c, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
                 FROM busybox
                 VOLUME ["/tmp/data"]`))
 
@@ -554,7 +554,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndMounts(c
 	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
                 FROM busybox
                 VOLUME ["/tmp/data"]`))
 

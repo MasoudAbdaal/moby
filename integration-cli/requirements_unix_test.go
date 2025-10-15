@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/containerd/cgroups/v3"
-	"github.com/docker/docker/pkg/sysinfo"
+	"github.com/moby/moby/v2/pkg/sysinfo"
 )
 
 var sysInfo *sysinfo.SysInfo
@@ -62,11 +62,6 @@ func cgroupCpuset() bool {
 
 func seccompEnabled() bool {
 	return sysInfo.Seccomp
-}
-
-func bridgeNfIptables() bool {
-	content, err := os.ReadFile("/proc/sys/net/bridge/bridge-nf-call-iptables")
-	return err == nil && strings.TrimSpace(string(content)) == "1"
 }
 
 func onlyCgroupsv2() bool {

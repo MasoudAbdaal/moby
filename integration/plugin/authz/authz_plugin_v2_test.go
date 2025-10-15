@@ -1,6 +1,6 @@
 //go:build !windows
 
-package authz // import "github.com/docker/docker/integration/plugin/authz"
+package authz
 
 import (
 	"context"
@@ -8,12 +8,10 @@ import (
 	"io"
 	"testing"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/requirement"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/integration/internal/requirement"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -74,7 +72,7 @@ func TestAuthZPluginV2Disable(t *testing.T) {
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
 	// disable the plugin
-	err = c.PluginDisable(ctx, authzPluginNameWithTag, types.PluginDisableOptions{})
+	err = c.PluginDisable(ctx, authzPluginNameWithTag, client.PluginDisableOptions{})
 	assert.NilError(t, err)
 
 	// now test to see if the docker api works.
@@ -99,7 +97,7 @@ func TestAuthZPluginV2RejectVolumeRequests(t *testing.T) {
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
-	_, err = c.VolumeList(ctx, volume.ListOptions{})
+	_, err = c.VolumeList(ctx, client.VolumeListOptions{})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
@@ -112,7 +110,7 @@ func TestAuthZPluginV2RejectVolumeRequests(t *testing.T) {
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
-	_, err = c.VolumesPrune(ctx, filters.Args{})
+	_, err = c.VolumesPrune(ctx, nil)
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 }
@@ -146,12 +144,11 @@ func TestAuthZPluginV2NonexistentFailsDaemonStart(t *testing.T) {
 	d.Start(t)
 }
 
-func pluginInstallGrantAllPermissions(ctx context.Context, client client.APIClient, name string) error {
-	options := types.PluginInstallOptions{
+func pluginInstallGrantAllPermissions(ctx context.Context, apiClient client.APIClient, name string) error {
+	responseReader, err := apiClient.PluginInstall(ctx, "", client.PluginInstallOptions{
 		RemoteRef:            name,
 		AcceptAllPermissions: true,
-	}
-	responseReader, err := client.PluginInstall(ctx, "", options)
+	})
 	if err != nil {
 		return err
 	}

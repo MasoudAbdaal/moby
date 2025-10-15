@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"runtime/trace"
 	"strconv"
@@ -13,7 +14,6 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/plugins/services/content/contentserver"
 	"github.com/distribution/reference"
-	"github.com/hashicorp/go-multierror"
 	"github.com/mitchellh/hashstructure/v2"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	apitypes "github.com/moby/buildkit/api/types"
@@ -35,6 +35,7 @@ import (
 	"github.com/moby/buildkit/solver/llbsolver"
 	"github.com/moby/buildkit/solver/llbsolver/cdidevices"
 	"github.com/moby/buildkit/solver/llbsolver/proc"
+	provenancetypes "github.com/moby/buildkit/solver/llbsolver/provenance/types"
 	"github.com/moby/buildkit/solver/pb"
 	"github.com/moby/buildkit/util/bklog"
 	"github.com/moby/buildkit/util/db"
@@ -73,6 +74,7 @@ type Opt struct {
 	HistoryConfig             *config.HistoryConfig
 	GarbageCollect            func(context.Context) error
 	GracefulStop              <-chan struct{}
+	ProvenanceEnv             map[string]any
 }
 
 type Controller struct { // TODO: ControlService
@@ -113,6 +115,7 @@ func NewController(opt Opt) (*Controller, error) {
 		SessionManager:   opt.SessionManager,
 		Entitlements:     opt.Entitlements,
 		HistoryQueue:     hq,
+		ProvenanceEnv:    opt.ProvenanceEnv,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create solver")
@@ -137,17 +140,20 @@ func NewController(opt Opt) (*Controller, error) {
 }
 
 func (c *Controller) Close() error {
-	rerr := c.opt.HistoryDB.Close()
+	var errs []error
+	if err := c.opt.HistoryDB.Close(); err != nil {
+		errs = append(errs, err)
+	}
 	if err := c.opt.WorkerController.Close(); err != nil {
-		rerr = multierror.Append(rerr, err)
+		errs = append(errs, err)
 	}
 	if err := c.opt.CacheStore.Close(); err != nil {
-		rerr = multierror.Append(rerr, err)
+		errs = append(errs, err)
 	}
 	if err := c.solver.Close(); err != nil {
-		rerr = multierror.Append(rerr, err)
+		errs = append(errs, err)
 	}
-	return rerr
+	return stderrors.Join(errs...)
 }
 
 func (c *Controller) Register(server *grpc.Server) {
@@ -167,7 +173,8 @@ func (c *Controller) DiskUsage(ctx context.Context, r *controlapi.DiskUsageReque
 	}
 	for _, w := range workers {
 		du, err := w.DiskUsage(ctx, client.DiskUsageInfo{
-			Filter: r.Filter,
+			Filter:   r.Filter,
+			AgeLimit: time.Duration(r.AgeLimit),
 		})
 		if err != nil {
 			return nil, err
@@ -376,6 +383,9 @@ func (c *Controller) Solve(ctx context.Context, req *controlapi.SolveRequest) (*
 	atomic.AddInt64(&c.buildCount, 1)
 	defer atomic.AddInt64(&c.buildCount, -1)
 
+	if req.Cache == nil {
+		req.Cache = &controlapi.CacheOptions{} // make sure cache options are initialized
+	}
 	translateLegacySolveRequest(req)
 
 	defer func() {
@@ -504,7 +514,19 @@ func (c *Controller) Solve(ctx context.Context, req *controlapi.SolveRequest) (*
 	}
 
 	if attrs, ok := attests["provenance"]; ok {
-		procs = append(procs, proc.ProvenanceProcessor(attrs))
+		var slsaVersion provenancetypes.ProvenanceSLSA
+		params := make(map[string]string)
+		for k, v := range attrs {
+			if k == "version" {
+				slsaVersion = provenancetypes.ProvenanceSLSA(v)
+				if err := slsaVersion.Validate(); err != nil {
+					return nil, err
+				}
+			} else {
+				params[k] = v
+			}
+		}
+		procs = append(procs, proc.ProvenanceProcessor(slsaVersion, params, c.opt.ProvenanceEnv))
 	}
 
 	resp, err := c.solver.Solve(ctx, req.Ref, req.Session, frontend.SolveRequest{

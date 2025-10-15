@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/system"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -174,14 +174,14 @@ func (s *DockerAPISuite) TestAPIStatsNetworkStatsVersioning(c *testing.T) {
 	assert.Assert(c, jsonBlobHasGTE121NetworkStats(statsJSONBlob), "Stats JSON blob from API does not look like a >=v1.21 API stats structure", statsJSONBlob)
 }
 
-func getNetworkStats(c *testing.T, id string) map[string]container.NetworkStats {
+func getNetworkStats(t *testing.T, id string) map[string]container.NetworkStats {
 	var st *container.StatsResponse
 
-	_, body, err := request.Get(testutil.GetContext(c), "/containers/"+id+"/stats?stream=false")
-	assert.NilError(c, err)
+	_, body, err := request.Get(testutil.GetContext(t), "/containers/"+id+"/stats?stream=false")
+	assert.NilError(t, err)
 
 	err = json.NewDecoder(body).Decode(&st)
-	assert.NilError(c, err)
+	assert.NilError(t, err)
 	body.Close()
 
 	return st.Networks
@@ -191,31 +191,31 @@ func getNetworkStats(c *testing.T, id string) map[string]container.NetworkStats 
 // container with id using an API call with version apiVersion. Since the
 // stats result type differs between API versions, we simply return
 // map[string]interface{}.
-func getStats(c *testing.T, id string) map[string]interface{} {
-	c.Helper()
-	stats := make(map[string]interface{})
+func getStats(t *testing.T, id string) map[string]any {
+	t.Helper()
+	stats := make(map[string]any)
 
-	_, body, err := request.Get(testutil.GetContext(c), "/containers/"+id+"/stats?stream=false")
-	assert.NilError(c, err)
+	_, body, err := request.Get(testutil.GetContext(t), "/containers/"+id+"/stats?stream=false")
+	assert.NilError(t, err)
 	defer body.Close()
 
 	err = json.NewDecoder(body).Decode(&stats)
-	assert.NilError(c, err, "failed to decode stat: %s", err)
+	assert.NilError(t, err, "failed to decode stat: %s", err)
 
 	return stats
 }
 
-func jsonBlobHasGTE121NetworkStats(blob map[string]interface{}) bool {
+func jsonBlobHasGTE121NetworkStats(blob map[string]any) bool {
 	networksStatsIntfc, ok := blob["networks"]
 	if !ok {
 		return false
 	}
-	networksStats, ok := networksStatsIntfc.(map[string]interface{})
+	networksStats, ok := networksStatsIntfc.(map[string]any)
 	if !ok {
 		return false
 	}
 	for _, networkInterfaceStatsIntfc := range networksStats {
-		networkInterfaceStats, ok := networkInterfaceStatsIntfc.(map[string]interface{})
+		networkInterfaceStats, ok := networkInterfaceStatsIntfc.(map[string]any)
 		if !ok {
 			return false
 		}

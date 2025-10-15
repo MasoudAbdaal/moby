@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	intoto "github.com/in-toto/in-toto-golang/in_toto"
-	slsa02 "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v0.2"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/cache"
 	cacheconfig "github.com/moby/buildkit/cache/config"
@@ -32,6 +32,7 @@ import (
 	sessionexporter "github.com/moby/buildkit/session/exporter"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/llbsolver/provenance"
+	provenancetypes "github.com/moby/buildkit/solver/llbsolver/provenance/types"
 	"github.com/moby/buildkit/solver/result"
 	spb "github.com/moby/buildkit/sourcepolicy/pb"
 	"github.com/moby/buildkit/util/bklog"
@@ -81,6 +82,7 @@ type Opt struct {
 	WorkerController *worker.Controller
 	HistoryQueue     *HistoryQueue
 	ResourceMonitor  *resources.Monitor
+	ProvenanceEnv    map[string]any
 }
 
 type Solver struct {
@@ -95,6 +97,7 @@ type Solver struct {
 	entitlements              []string
 	history                   *HistoryQueue
 	sysSampler                *resources.Sampler[*resourcestypes.SysSample]
+	provenanceEnv             map[string]any
 }
 
 // Processor defines a processing function to be applied after solving, but
@@ -102,6 +105,18 @@ type Solver struct {
 type Processor func(ctx context.Context, result *Result, s *Solver, j *solver.Job, usage *resources.SysSampler) (*Result, error)
 
 func New(opt Opt) (*Solver, error) {
+	// buildConfig,builderPlatform,platform are not allowd
+	forbiddenKeys := map[string]struct{}{
+		"buildConfig":     {},
+		"builderPlatform": {},
+		"platform":        {},
+	}
+	for k := range opt.ProvenanceEnv {
+		if _, ok := forbiddenKeys[k]; ok {
+			return nil, errors.Errorf("key %q is builtin and not allowed to be modified in provenance config", k)
+		}
+	}
+
 	s := &Solver{
 		workerController:          opt.WorkerController,
 		resolveWorker:             defaultResolver(opt.WorkerController),
@@ -112,6 +127,7 @@ func New(opt Opt) (*Solver, error) {
 		sm:                        opt.SessionManager,
 		entitlements:              opt.Entitlements,
 		history:                   opt.HistoryQueue,
+		provenanceEnv:             opt.ProvenanceEnv,
 	}
 
 	sampler, err := resources.NewSysSampler()
@@ -207,7 +223,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 		}
 
 		ctx, cancel := context.WithCancelCause(ctx)
-		ctx, _ = context.WithTimeoutCause(ctx, 300*time.Second, errors.WithStack(context.DeadlineExceeded))
+		ctx, _ = context.WithTimeoutCause(ctx, 300*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet
 		defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 		var mu sync.Mutex
@@ -229,15 +245,22 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 			}
 		}
 
+		slsaVersion := provenancetypes.ProvenanceSLSA02
+		if v, ok := req.FrontendOpt["build-arg:BUILDKIT_HISTORY_PROVENANCE_V1"]; ok {
+			if b, err := strconv.ParseBool(v); err == nil && b {
+				slsaVersion = provenancetypes.ProvenanceSLSA1
+			}
+		}
+
 		makeProvenance := func(name string, res solver.ResultProxy, cap *provenance.Capture) (*controlapi.Descriptor, func(), error) {
 			span, ctx := tracing.StartSpan(ctx, fmt.Sprintf("create %s history provenance", name))
 			defer span.End()
 
-			prc, err := NewProvenanceCreator(ctx2, cap, res, attrs, j, usage)
+			pc, err := NewProvenanceCreator(ctx2, slsaVersion, cap, res, attrs, j, usage, s.provenanceEnv)
 			if err != nil {
 				return nil, nil, err
 			}
-			pr, err := prc.Predicate()
+			pr, err := pc.Predicate(ctx)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -267,7 +290,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 				Size:      desc.Size,
 				MediaType: desc.MediaType,
 				Annotations: map[string]string{
-					"in-toto.io/predicate-type": slsa02.PredicateSLSAProvenance,
+					"in-toto.io/predicate-type": pc.PredicateType(),
 				},
 			}, release, nil
 		}
@@ -676,7 +699,7 @@ func (s *Solver) Solve(ctx context.Context, id string, sessionID string, req fro
 
 func (s *Solver) getSessionExporters(ctx context.Context, sessionID string, id int, inp *exporter.Source) ([]exporter.ExporterInstance, error) {
 	timeoutCtx, cancel := context.WithCancelCause(ctx)
-	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 5*time.Second, errors.WithStack(context.DeadlineExceeded))
+	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 5*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet
 	defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 	caller, err := s.sm.Get(timeoutCtx, sessionID, false)
@@ -753,10 +776,10 @@ func runCacheExporters(ctx context.Context, exporters []RemoteCacheExporter, j *
 		i, exp := i, exp
 		eg.Go(func() (err error) {
 			id := fmt.Sprint(j.SessionID, "-cache-", i)
-			err = inBuilderContext(ctx, j, exp.Exporter.Name(), id, func(ctx context.Context, _ session.Group) error {
+			err = inBuilderContext(ctx, j, exp.Name(), id, func(ctx context.Context, _ session.Group) error {
 				prepareDone := progress.OneOff(ctx, "preparing build cache for export")
 				if err := result.EachRef(cached, inp, func(res solver.CachedResult, ref cache.ImmutableRef) error {
-					ctx = withDescHandlerCacheOpts(ctx, ref)
+					ctx := withDescHandlerCacheOpts(ctx, ref)
 
 					// Configure compression
 					compressionConfig := exp.Config().Compression
@@ -824,6 +847,7 @@ func (s *Solver) runExporters(ctx context.Context, exporters []exporter.Exporter
 	eg, ctx := errgroup.WithContext(ctx)
 	resps := make([]map[string]string, len(exporters))
 	descs := make([]exporter.DescriptorReference, len(exporters))
+	var inlineCacheMu sync.Mutex
 	for i, exp := range exporters {
 		i, exp := i, exp
 		eg.Go(func() error {
@@ -842,6 +866,8 @@ func (s *Solver) runExporters(ctx context.Context, exporters []exporter.Exporter
 					}
 				}
 				inlineCache := exptypes.InlineCache(func(ctx context.Context) (*result.Result[*exptypes.InlineCacheEntry], error) {
+					inlineCacheMu.Lock() // ensure only one inline cache exporter runs at a time
+					defer inlineCacheMu.Unlock()
 					return runInlineCacheExporter(ctx, exp, inlineCacheExporter, job, cached)
 				})
 
@@ -933,6 +959,7 @@ func addProvenanceToResult(res *frontend.Result, br *provenanceBridge) (*Result,
 	}
 	for k, ref := range res.Refs {
 		if ref == nil {
+			out.Provenance.Refs[k] = nil
 			continue
 		}
 		cp, err := getProvenance(ref, reqs.refs[k].bridge, k, reqs)
@@ -985,10 +1012,6 @@ func getRefProvenance(ref solver.ResultProxy, br *provenanceBridge) (*provenance
 		pr.Frontend = br.req.Frontend
 		pr.Args = provenance.FilterArgs(br.req.FrontendOpt)
 		// TODO: should also save some output options like compression
-
-		if len(br.req.FrontendInputs) > 0 {
-			pr.IncompleteMaterials = true // not implemented
-		}
 	}
 
 	return pr, nil

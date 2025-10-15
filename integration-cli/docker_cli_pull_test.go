@@ -17,12 +17,12 @@ type DockerCLIPullSuite struct {
 	ds *DockerSuite
 }
 
-func (s *DockerCLIPullSuite) TearDownTest(ctx context.Context, c *testing.T) {
-	s.ds.TearDownTest(ctx, c)
+func (s *DockerCLIPullSuite) TearDownTest(ctx context.Context, t *testing.T) {
+	s.ds.TearDownTest(ctx, t)
 }
 
-func (s *DockerCLIPullSuite) OnTimeout(c *testing.T) {
-	s.ds.OnTimeout(c)
+func (s *DockerCLIPullSuite) OnTimeout(t *testing.T) {
+	s.ds.OnTimeout(t)
 }
 
 // TestPullFromCentralRegistry pulls an image from the central registry and verifies that the client
@@ -203,7 +203,7 @@ func (s *DockerHubPullSuite) TestPullClientDisconnect(c *testing.T) {
 	assert.ErrorContains(c, err, "", "image was pulled after client disconnected")
 }
 
-// Regression test for https://github.com/docker/docker/issues/26429
+// Regression test for https://github.com/moby/moby/issues/26429
 func (s *DockerCLIPullSuite) TestPullLinuxImageFailsOnWindows(c *testing.T) {
 	testRequires(c, DaemonIsWindows, Network)
 	_, _, err := dockerCmdWithError("pull", "ubuntu")
@@ -211,7 +211,7 @@ func (s *DockerCLIPullSuite) TestPullLinuxImageFailsOnWindows(c *testing.T) {
 	assert.ErrorContains(c, err, "no matching manifest for windows")
 }
 
-// Regression test for https://github.com/docker/docker/issues/28892
+// Regression test for https://github.com/moby/moby/issues/28892
 func (s *DockerCLIPullSuite) TestPullWindowsImageFailsOnLinux(c *testing.T) {
 	testRequires(c, DaemonIsLinux, Network)
 	_, _, err := dockerCmdWithError("pull", "mcr.microsoft.com/windows/servercore:ltsc2022")

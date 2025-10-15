@@ -4,20 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	swarmtypes "github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/client"
+	swarmtypes "github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/client"
 	"gotest.tools/v3/poll"
 )
 
 // NoTasksForService verifies that there are no more tasks for the given service
-func NoTasksForService(ctx context.Context, client client.ServiceAPIClient, serviceID string) func(log poll.LogT) poll.Result {
+func NoTasksForService(ctx context.Context, apiClient client.ServiceAPIClient, serviceID string) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
-		tasks, err := client.TaskList(ctx, types.TaskListOptions{
-			Filters: filters.NewArgs(
-				filters.Arg("service", serviceID),
-			),
+		tasks, err := apiClient.TaskList(ctx, client.TaskListOptions{
+			Filters: make(client.Filters).Add("service", serviceID),
 		})
 		if err == nil {
 			if len(tasks) == 0 {
@@ -34,9 +30,9 @@ func NoTasksForService(ctx context.Context, client client.ServiceAPIClient, serv
 }
 
 // NoTasks verifies that all tasks are gone
-func NoTasks(ctx context.Context, client client.ServiceAPIClient) func(log poll.LogT) poll.Result {
+func NoTasks(ctx context.Context, apiClient client.ServiceAPIClient) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
-		tasks, err := client.TaskList(ctx, types.TaskListOptions{})
+		tasks, err := apiClient.TaskList(ctx, client.TaskListOptions{})
 		switch {
 		case err != nil:
 			return poll.Error(err)
@@ -49,12 +45,10 @@ func NoTasks(ctx context.Context, client client.ServiceAPIClient) func(log poll.
 }
 
 // RunningTasksCount verifies there are `instances` tasks running for `serviceID`
-func RunningTasksCount(ctx context.Context, client client.ServiceAPIClient, serviceID string, instances uint64) func(log poll.LogT) poll.Result {
+func RunningTasksCount(ctx context.Context, apiClient client.ServiceAPIClient, serviceID string, instances uint64) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
-		filter := filters.NewArgs()
-		filter.Add("service", serviceID)
-		tasks, err := client.TaskList(ctx, types.TaskListOptions{
-			Filters: filter,
+		tasks, err := apiClient.TaskList(ctx, client.TaskListOptions{
+			Filters: make(client.Filters).Add("service", serviceID),
 		})
 		var running int
 		var taskError string
@@ -62,8 +56,9 @@ func RunningTasksCount(ctx context.Context, client client.ServiceAPIClient, serv
 			switch task.Status.State {
 			case swarmtypes.TaskStateRunning:
 				running++
-			case swarmtypes.TaskStateFailed:
+			case swarmtypes.TaskStateFailed, swarmtypes.TaskStateRejected:
 				if task.Status.Err != "" {
+					log.Logf("task %v on node %v %v: %v", task.ID, task.NodeID, task.Status.State, task.Status.Err)
 					taskError = task.Status.Err
 				}
 			default:
@@ -89,8 +84,8 @@ func RunningTasksCount(ctx context.Context, client client.ServiceAPIClient, serv
 // JobComplete is a poll function for determining that a ReplicatedJob is
 // completed additionally, while polling, it verifies that the job never
 // exceeds MaxConcurrent running tasks
-func JobComplete(ctx context.Context, client client.ServiceAPIClient, service swarmtypes.Service) func(log poll.LogT) poll.Result {
-	filter := filters.NewArgs(filters.Arg("service", service.ID))
+func JobComplete(ctx context.Context, apiClient client.ServiceAPIClient, service swarmtypes.Service) func(log poll.LogT) poll.Result {
+	filter := make(client.Filters).Add("service", service.ID)
 
 	var jobIteration swarmtypes.Version
 	if service.JobStatus != nil {
@@ -102,7 +97,7 @@ func JobComplete(ctx context.Context, client client.ServiceAPIClient, service sw
 	previousResult := ""
 
 	return func(log poll.LogT) poll.Result {
-		tasks, err := client.TaskList(ctx, types.TaskListOptions{
+		tasks, err := apiClient.TaskList(ctx, client.TaskListOptions{
 			Filters: filter,
 		})
 		if err != nil {
@@ -159,5 +154,22 @@ func JobComplete(ctx context.Context, client client.ServiceAPIClient, service sw
 				completed, running, totalCompletions,
 			)
 		}
+	}
+}
+
+func HasLeader(ctx context.Context, apiClient client.NodeAPIClient) func(log poll.LogT) poll.Result {
+	return func(log poll.LogT) poll.Result {
+		nodes, err := apiClient.NodeList(ctx, client.NodeListOptions{
+			Filters: make(client.Filters).Add("role", "manager"),
+		})
+		if err != nil {
+			return poll.Error(err)
+		}
+		for _, node := range nodes {
+			if node.ManagerStatus != nil && node.ManagerStatus.Leader {
+				return poll.Success()
+			}
+		}
+		return poll.Continue("no leader elected yet")
 	}
 }

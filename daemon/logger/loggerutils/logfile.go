@@ -1,7 +1,4 @@
-// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.22
-
-package loggerutils // import "github.com/docker/docker/daemon/logger/loggerutils"
+package loggerutils
 
 import (
 	"compress/gzip"
@@ -19,8 +16,8 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/tracing"
 	"github.com/containerd/log"
-	"github.com/docker/docker/daemon/logger"
-	"github.com/docker/docker/pkg/pools"
+	"github.com/moby/moby/v2/daemon/logger"
+	"github.com/moby/moby/v2/pkg/pools"
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -121,12 +118,12 @@ type GetTailReaderFunc func(ctx context.Context, f SizeReaderAt, nLogLines int) 
 
 // NewLogFile creates new LogFile
 func NewLogFile(logPath string, capacity int64, maxFiles int, compress bool, decodeFunc MakeDecoderFn, perms os.FileMode, getTailReader GetTailReaderFunc) (*LogFile, error) {
-	log, err := openFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, perms)
+	logFile, err := openFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, perms)
 	if err != nil {
 		return nil, err
 	}
 
-	size, err := log.Seek(0, io.SeekEnd)
+	size, err := logFile.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +138,7 @@ func NewLogFile(logPath string, capacity int64, maxFiles int, compress bool, dec
 	st <- logReadState{pos: pos}
 
 	return &LogFile{
-		f:             log,
+		f:             logFile,
 		read:          st,
 		pos:           pos,
 		closed:        make(chan struct{}),
@@ -371,7 +368,7 @@ func (w *LogFile) Close() error {
 	close(w.closed)
 	// Wait until any in-progress rotation is complete.
 	w.rotateMu.Lock()
-	w.rotateMu.Unlock() //nolint:staticcheck
+	defer w.rotateMu.Unlock()
 	return nil
 }
 

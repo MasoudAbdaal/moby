@@ -1,6 +1,6 @@
 //go:build !windows
 
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
@@ -13,13 +13,12 @@ import (
 
 	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/log"
-	"github.com/docker/docker/api/types"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/system"
-	"github.com/docker/docker/daemon/config"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/pkg/rootless"
-	"github.com/docker/docker/pkg/sysinfo"
+	"github.com/moby/moby/api/types"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/v2/daemon/config"
+	"github.com/moby/moby/v2/daemon/internal/rootless"
+	"github.com/moby/moby/v2/pkg/sysinfo"
 	"github.com/pkg/errors"
 	rkclient "github.com/rootless-containers/rootlesskit/v2/pkg/api/client"
 )
@@ -35,8 +34,6 @@ func (daemon *Daemon) fillPlatformInfo(ctx context.Context, v *system.Info, sysI
 	if v.CgroupDriver != cgroupNoneDriver {
 		v.MemoryLimit = sysInfo.MemoryLimit
 		v.SwapLimit = sysInfo.SwapLimit
-		v.KernelMemory = sysInfo.KernelMemory
-		v.KernelMemoryTCP = sysInfo.KernelMemoryTCP
 		v.OomKillDisable = sysInfo.OomKillDisable
 		v.CPUCfsPeriod = sysInfo.CPUCfs
 		v.CPUCfsQuota = sysInfo.CPUCfs
@@ -94,11 +91,6 @@ func (daemon *Daemon) fillPlatformInfo(ctx context.Context, v *system.Info, sysI
 		}
 		if !v.SwapLimit {
 			v.Warnings = append(v.Warnings, "WARNING: No swap limit support")
-		}
-		if !v.KernelMemoryTCP && v.CgroupVersion == "1" {
-			// kernel memory is not available for cgroup v2.
-			// Warning is not printed on cgroup v2, because there is no action user can take.
-			v.Warnings = append(v.Warnings, "WARNING: No kernel memory TCP limit support")
 		}
 		if !v.OomKillDisable && v.CgroupVersion == "1" {
 			// oom kill disable is not available for cgroup v2.
@@ -180,7 +172,7 @@ func (daemon *Daemon) fillPlatformVersion(ctx context.Context, v *types.Version,
 	}
 
 	if err := daemon.fillRootlessVersion(ctx, v); err != nil {
-		if errdefs.IsContext(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		log.G(ctx).WithError(err).Warn("Failed to fill rootless version")
@@ -207,7 +199,7 @@ func (daemon *Daemon) populateInitCommit(ctx context.Context, v *system.Info, cf
 
 	rv, err := exec.CommandContext(ctx, initBinary, "--version").Output()
 	if err != nil {
-		if errdefs.IsContext(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		log.G(ctx).WithError(err).Warnf("Failed to retrieve %s version", initBinary)
@@ -262,7 +254,7 @@ func (daemon *Daemon) fillRootlessVersion(ctx context.Context, v *types.Version)
 		err = func() error {
 			rv, err := exec.CommandContext(ctx, "slirp4netns", "--version").Output()
 			if err != nil {
-				if errdefs.IsContext(err) {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
 				}
 				log.G(ctx).WithError(err).Warn("Failed to retrieve slirp4netns version")
@@ -290,7 +282,7 @@ func (daemon *Daemon) fillRootlessVersion(ctx context.Context, v *types.Version)
 		err = func() error {
 			out, err := exec.CommandContext(ctx, "vpnkit", "--version").Output()
 			if err != nil {
-				if errdefs.IsContext(err) {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
 				}
 				log.G(ctx).WithError(err).Warn("Failed to retrieve vpnkit version")
@@ -339,7 +331,7 @@ func fillDriverWarnings(v *system.Info) {
 // Output example from `docker-init --version`:
 //
 //	tini version 0.18.0 - git.fec3683
-func parseInitVersion(v string) (version string, commit string, err error) {
+func parseInitVersion(v string) (version string, commit string, _ error) {
 	parts := strings.Split(v, " - ")
 
 	if len(parts) >= 2 {
@@ -353,9 +345,9 @@ func parseInitVersion(v string) (version string, commit string, err error) {
 		version = strings.TrimPrefix(parts[0], "tini version ")
 	}
 	if version == "" && commit == "" {
-		err = errors.Errorf("unknown output format: %s", v)
+		return "", "", errors.Errorf("unknown output format: %s", v)
 	}
-	return version, commit, err
+	return version, commit, nil
 }
 
 // parseRuntimeVersion parses the output of `[runtime] --version` and extracts the
@@ -366,7 +358,7 @@ func parseInitVersion(v string) (version string, commit string, err error) {
 //	runc version 1.0.0-rc5+dev
 //	commit: 69663f0bd4b60df09991c08812a60108003fa340
 //	spec: 1.0.0
-func parseRuntimeVersion(v string) (runtime, version, commit string, err error) {
+func parseRuntimeVersion(v string) (runtime, version, commit string, _ error) {
 	lines := strings.Split(strings.TrimSpace(v), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "version") {
@@ -381,12 +373,12 @@ func parseRuntimeVersion(v string) (runtime, version, commit string, err error) 
 		}
 	}
 	if version == "" && commit == "" {
-		err = errors.Errorf("unknown output format: %s", v)
+		return runtime, "", "", errors.Errorf("unknown output format: %s", v)
 	}
-	return runtime, version, commit, err
+	return runtime, version, commit, nil
 }
 
-func parseDefaultRuntimeVersion(rts *runtimes) (runtime, version, commit string, err error) {
+func parseDefaultRuntimeVersion(rts *runtimes) (runtime, version, commit string, _ error) {
 	shim, opts, err := rts.Get(rts.Default)
 	if err != nil {
 		return "", "", "", err
@@ -407,7 +399,7 @@ func parseDefaultRuntimeVersion(rts *runtimes) (runtime, version, commit string,
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to parse %s version: %w", rt, err)
 	}
-	return runtime, version, commit, err
+	return runtime, version, commit, nil
 }
 
 func cgroupNamespacesEnabled(sysInfo *sysinfo.SysInfo, cfg *config.Config) bool {
@@ -426,7 +418,7 @@ func noNewPrivileges(cfg *config.Config) bool {
 func (daemon *Daemon) populateContainerdCommit(ctx context.Context, v *system.Commit) error {
 	rv, err := daemon.containerd.Version(ctx)
 	if err != nil {
-		if errdefs.IsContext(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		log.G(ctx).WithError(err).Warnf("Failed to retrieve containerd version")
@@ -439,7 +431,7 @@ func (daemon *Daemon) populateContainerdCommit(ctx context.Context, v *system.Co
 func (daemon *Daemon) populateContainerdVersion(ctx context.Context, v *types.Version) error {
 	rv, err := daemon.containerd.Version(ctx)
 	if err != nil {
-		if errdefs.IsContext(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		log.G(ctx).WithError(err).Warn("Failed to retrieve containerd version")
@@ -480,7 +472,7 @@ func populateInitVersion(ctx context.Context, cfg *configStore, v *types.Version
 
 	rv, err := exec.CommandContext(ctx, initBinary, "--version").Output()
 	if err != nil {
-		if errdefs.IsContext(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		log.G(ctx).WithError(err).Warnf("Failed to retrieve %s version", initBinary)

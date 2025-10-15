@@ -1,19 +1,19 @@
-package system // import "github.com/docker/docker/integration/system"
+package system
 
 import (
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
 )
 
@@ -24,8 +24,8 @@ func TestPingCacheHeaders(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, res.StatusCode, http.StatusOK)
 
-	assert.Equal(t, hdr(res, "Cache-Control"), "no-cache, no-store, must-revalidate")
-	assert.Equal(t, hdr(res, "Pragma"), "no-cache")
+	assert.Assert(t, is.DeepEqual(res.Header.Values("Cache-Control"), []string{"no-cache, no-store, must-revalidate"}))
+	assert.Assert(t, is.DeepEqual(res.Header.Values("Pragma"), []string{"no-cache"}))
 }
 
 func TestPingGet(t *testing.T) {
@@ -38,7 +38,7 @@ func TestPingGet(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, string(b), "OK")
 	assert.Equal(t, res.StatusCode, http.StatusOK)
-	assert.Check(t, hdr(res, "Api-Version") != "")
+	assert.Check(t, res.Header.Get("Api-Version") != "")
 }
 
 func TestPingHead(t *testing.T) {
@@ -51,7 +51,7 @@ func TestPingHead(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, 0, len(b))
 	assert.Equal(t, res.StatusCode, http.StatusOK)
-	assert.Check(t, hdr(res, "Api-Version") != "")
+	assert.Check(t, res.Header.Get("Api-Version") != "")
 }
 
 func TestPingSwarmHeader(t *testing.T) {
@@ -60,7 +60,7 @@ func TestPingSwarmHeader(t *testing.T) {
 
 	ctx := setupTest(t)
 	d := daemon.New(t)
-	d.Start(t)
+	d.StartNode(t)
 	defer d.Stop(t)
 	apiClient := d.NewClientT(t)
 	defer apiClient.Close()
@@ -110,9 +110,9 @@ func TestPingBuilderHeader(t *testing.T) {
 		d.Start(t)
 		defer d.Stop(t)
 
-		expected := types.BuilderBuildKit
+		expected := build.BuilderBuildKit
 		if runtime.GOOS == "windows" {
-			expected = types.BuilderV1
+			expected = build.BuilderV1
 		}
 
 		p, err := apiClient.Ping(ctx)
@@ -128,17 +128,9 @@ func TestPingBuilderHeader(t *testing.T) {
 		d.Start(t, "--config-file", cfg)
 		defer d.Stop(t)
 
-		expected := types.BuilderV1
+		expected := build.BuilderV1
 		p, err := apiClient.Ping(ctx)
 		assert.NilError(t, err)
 		assert.Equal(t, p.BuilderVersion, expected)
 	})
-}
-
-func hdr(res *http.Response, name string) string {
-	val, ok := res.Header[http.CanonicalHeaderKey(name)]
-	if !ok || len(val) == 0 {
-		return ""
-	}
-	return strings.Join(val, ", ")
 }

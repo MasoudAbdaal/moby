@@ -4,14 +4,13 @@ import (
 	"strings"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/internal/testutils/specialimage"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	iimage "github.com/moby/moby/v2/integration/internal/image"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -28,19 +27,19 @@ func TestPruneDontDeleteUsedDangling(t *testing.T) {
 	d.Start(t)
 	defer d.Stop(t)
 
-	client := d.NewClientT(t)
-	defer client.Close()
+	apiClient := d.NewClientT(t)
+	defer apiClient.Close()
 
-	danglingID := specialimage.Load(ctx, t, client, specialimage.Dangling)
+	danglingID := iimage.Load(ctx, t, apiClient, specialimage.Dangling)
 
-	_, err := client.ImageInspect(ctx, danglingID)
+	_, err := apiClient.ImageInspect(ctx, danglingID)
 	assert.NilError(t, err, "Test dangling image doesn't exist")
 
-	container.Create(ctx, t, client,
+	container.Create(ctx, t, apiClient,
 		container.WithImage(danglingID),
 		container.WithCmd("sleep", "60"))
 
-	pruned, err := client.ImagesPrune(ctx, filters.NewArgs(filters.Arg("dangling", "true")))
+	pruned, err := apiClient.ImagesPrune(ctx, make(client.Filters).Add("dangling", "true"))
 	assert.NilError(t, err)
 
 	for _, deleted := range pruned.ImagesDeleted {
@@ -49,7 +48,7 @@ func TestPruneDontDeleteUsedDangling(t *testing.T) {
 		}
 	}
 
-	_, err = client.ImageInspect(ctx, danglingID)
+	_, err = apiClient.ImageInspect(ctx, danglingID)
 	assert.NilError(t, err, "Test dangling image should still exist")
 }
 
@@ -81,14 +80,14 @@ func TestPruneLexographicalOrder(t *testing.T) {
 	err = apiClient.ImageTag(ctx, id, "busybox:z")
 	assert.NilError(t, err)
 
-	_, err = apiClient.ImageRemove(ctx, "busybox:latest", image.RemoveOptions{Force: true})
+	_, err = apiClient.ImageRemove(ctx, "busybox:latest", client.ImageRemoveOptions{Force: true})
 	assert.NilError(t, err)
 
 	// run container
 	cid := container.Create(ctx, t, apiClient, container.WithImage(id))
-	defer container.Remove(ctx, t, apiClient, cid, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, cid, client.ContainerRemoveOptions{Force: true})
 
-	pruned, err := apiClient.ImagesPrune(ctx, filters.NewArgs(filters.Arg("dangling", "false")))
+	pruned, err := apiClient.ImagesPrune(ctx, make(client.Filters).Add("dangling", "false"))
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Len(pruned.ImagesDeleted, len(tags)))
@@ -215,10 +214,10 @@ func TestPruneDontDeleteUsedImage(t *testing.T) {
 				cid := container.Run(ctx, t, apiClient,
 					container.WithImage(image),
 					container.WithCmd("sleep", "60"))
-				defer container.Remove(ctx, t, apiClient, cid, containertypes.RemoveOptions{Force: true})
+				defer container.Remove(ctx, t, apiClient, cid, client.ContainerRemoveOptions{Force: true})
 
 				// dangling=false also prunes unused images
-				pruned, err := apiClient.ImagesPrune(ctx, filters.NewArgs(filters.Arg("dangling", "false")))
+				pruned, err := apiClient.ImagesPrune(ctx, make(client.Filters).Add("dangling", "false"))
 				assert.NilError(t, err)
 
 				env.check(t, apiClient, pruned)

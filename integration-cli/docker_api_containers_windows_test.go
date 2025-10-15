@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	winio "github.com/Microsoft/go-winio"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/testutil"
+	"github.com/Microsoft/go-winio"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/internal/testutil"
 	"github.com/pkg/errors"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -48,8 +49,8 @@ func (s *DockerAPISuite) TestContainersAPICreateMountsBindNamedPipe(c *testing.T
 	name := "test-bind-npipe"
 
 	ctx := testutil.GetContext(c)
-	client := testEnv.APIClient()
-	_, err = client.ContainerCreate(ctx,
+	apiClient := testEnv.APIClient()
+	_, err = apiClient.ContainerCreate(ctx,
 		&container.Config{
 			Image: testEnv.PlatformDefaults.BaseImage,
 			Cmd:   []string{"cmd", "/c", cmd},
@@ -65,7 +66,7 @@ func (s *DockerAPISuite) TestContainersAPICreateMountsBindNamedPipe(c *testing.T
 		nil, nil, name)
 	assert.NilError(c, err)
 
-	err = client.ContainerStart(ctx, name, container.StartOptions{})
+	err = apiClient.ContainerStart(ctx, name, client.ContainerStartOptions{})
 	assert.NilError(c, err)
 
 	err = <-ch

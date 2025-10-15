@@ -1,4 +1,4 @@
-package secret // import "github.com/docker/docker/integration/secret"
+package secret
 
 import (
 	"bytes"
@@ -8,15 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	swarmtypes "github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/integration/internal/swarm"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/docker/testutil"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	swarmtypes "github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/swarm"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -54,7 +51,7 @@ func TestSecretList(t *testing.T) {
 	c := d.NewClientT(t)
 	defer c.Close()
 
-	configs, err := c.SecretList(ctx, types.SecretListOptions{})
+	configs, err := c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Check(t, is.Equal(len(configs), 0))
 
@@ -70,40 +67,40 @@ func TestSecretList(t *testing.T) {
 	secret1ID := createSecret(ctx, t, c, testName1, []byte("TESTINGDATA1"), map[string]string{"type": "production"})
 
 	// test by `secret ls`
-	entries, err := c.SecretList(ctx, types.SecretListOptions{})
+	entries, err := c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Check(t, is.DeepEqual(secretNamesFromList(entries), testNames))
 
 	testCases := []struct {
-		filters  filters.Args
+		filters  client.Filters
 		expected []string
 	}{
 		// test filter by name `secret ls --filter name=xxx`
 		{
-			filters:  filters.NewArgs(filters.Arg("name", testName0)),
+			filters:  make(client.Filters).Add("name", testName0),
 			expected: []string{testName0},
 		},
 		// test filter by id `secret ls --filter id=xxx`
 		{
-			filters:  filters.NewArgs(filters.Arg("id", secret1ID)),
+			filters:  make(client.Filters).Add("id", secret1ID),
 			expected: []string{testName1},
 		},
 		// test filter by label `secret ls --filter label=xxx`
 		{
-			filters:  filters.NewArgs(filters.Arg("label", "type")),
+			filters:  make(client.Filters).Add("label", "type"),
 			expected: testNames,
 		},
 		{
-			filters:  filters.NewArgs(filters.Arg("label", "type=test")),
+			filters:  make(client.Filters).Add("label", "type=test"),
 			expected: []string{testName0},
 		},
 		{
-			filters:  filters.NewArgs(filters.Arg("label", "type=production")),
+			filters:  make(client.Filters).Add("label", "type=production"),
 			expected: []string{testName1},
 		},
 	}
 	for _, tc := range testCases {
-		entries, err = c.SecretList(ctx, types.SecretListOptions{
+		entries, err = c.SecretList(ctx, client.SecretListOptions{
 			Filters: tc.filters,
 		})
 		assert.NilError(t, err)
@@ -143,18 +140,18 @@ func TestSecretsCreateAndDelete(t *testing.T) {
 		},
 		Data: []byte("TESTINGDATA"),
 	})
-	assert.Check(t, errdefs.IsConflict(err))
+	assert.Check(t, cerrdefs.IsConflict(err))
 	assert.Check(t, is.ErrorContains(err, testName))
 
 	err = c.SecretRemove(ctx, secretID)
 	assert.NilError(t, err)
 
 	_, _, err = c.SecretInspectWithRaw(ctx, secretID)
-	assert.Check(t, errdefs.IsNotFound(err))
+	assert.Check(t, cerrdefs.IsNotFound(err))
 	assert.Check(t, is.ErrorContains(err, secretID))
 
 	err = c.SecretRemove(ctx, "non-existing")
-	assert.Check(t, errdefs.IsNotFound(err))
+	assert.Check(t, cerrdefs.IsNotFound(err))
 	assert.Check(t, is.ErrorContains(err, "non-existing"))
 
 	testName = "test_secret_with_labels_" + t.Name()
@@ -218,7 +215,7 @@ func TestSecretsUpdate(t *testing.T) {
 	// this test will produce an error in func UpdateSecret
 	insp.Spec.Data = []byte("TESTINGDATA2")
 	err = c.SecretUpdate(ctx, secretID, insp.Version, insp.Spec)
-	assert.Check(t, errdefs.IsInvalidParameter(err))
+	assert.Check(t, cerrdefs.IsInvalidArgument(err))
 	assert.Check(t, is.ErrorContains(err, "only updates to Labels are allowed"))
 }
 
@@ -314,7 +311,7 @@ func TestTemplatedSecret(t *testing.T) {
 	tasks := swarm.GetRunningTasks(ctx, t, c, serviceID)
 	assert.Assert(t, len(tasks) > 0, "no running tasks found for service %s", serviceID)
 
-	resp := swarm.ExecTask(ctx, t, d, tasks[0], container.ExecOptions{
+	resp := swarm.ExecTask(ctx, t, d, tasks[0], client.ExecCreateOptions{
 		Cmd:          []string{"/bin/cat", "/run/secrets/templated_secret"},
 		AttachStdout: true,
 		AttachStderr: true,
@@ -329,7 +326,7 @@ func TestTemplatedSecret(t *testing.T) {
 
 	outBuf.Reset()
 	errBuf.Reset()
-	resp = swarm.ExecTask(ctx, t, d, tasks[0], container.ExecOptions{
+	resp = swarm.ExecTask(ctx, t, d, tasks[0], client.ExecCreateOptions{
 		Cmd:          []string{"mount"},
 		AttachStdout: true,
 		AttachStderr: true,
@@ -357,7 +354,7 @@ func TestSecretCreateResolve(t *testing.T) {
 	fakeName := secretID
 	fakeID := createSecret(ctx, t, c, fakeName, []byte("fake foo"), nil)
 
-	entries, err := c.SecretList(ctx, types.SecretListOptions{})
+	entries, err := c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Check(t, is.Contains(secretNamesFromList(entries), testName))
 	assert.Check(t, is.Contains(secretNamesFromList(entries), fakeName))
@@ -366,7 +363,7 @@ func TestSecretCreateResolve(t *testing.T) {
 	assert.NilError(t, err)
 
 	// Fake one will remain
-	entries, err = c.SecretList(ctx, types.SecretListOptions{})
+	entries, err = c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Assert(t, is.DeepEqual(secretNamesFromList(entries), []string{fakeName}))
 
@@ -376,15 +373,15 @@ func TestSecretCreateResolve(t *testing.T) {
 	// - Full Name
 	// - Partial ID (prefix)
 	err = c.SecretRemove(ctx, fakeName[:5])
-	assert.Assert(t, nil != err)
-	entries, err = c.SecretList(ctx, types.SecretListOptions{})
+	assert.Assert(t, err != nil)
+	entries, err = c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Assert(t, is.DeepEqual(secretNamesFromList(entries), []string{fakeName}))
 
 	// Remove based on ID prefix of the fake one should succeed
 	err = c.SecretRemove(ctx, fakeID[:5])
 	assert.NilError(t, err)
-	entries, err = c.SecretList(ctx, types.SecretListOptions{})
+	entries, err = c.SecretList(ctx, client.SecretListOptions{})
 	assert.NilError(t, err)
 	assert.Assert(t, is.Equal(0, len(entries)))
 }

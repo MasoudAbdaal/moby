@@ -1,14 +1,14 @@
-package convert // import "github.com/docker/docker/daemon/cluster/convert"
+package convert
 
 import (
 	"fmt"
 	"strings"
 
-	types "github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/api/types/swarm/runtime"
-	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/gogo/protobuf/proto"
 	gogotypes "github.com/gogo/protobuf/types"
+	types "github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/v2/daemon/cluster/internal/runtime"
+	"github.com/moby/moby/v2/pkg/namesgenerator"
 	swarmapi "github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/api/genericresource"
 	"github.com/pkg/errors"
@@ -210,7 +210,8 @@ func ServiceSpecToGRPC(s types.ServiceSpec) (swarmapi.ServiceSpec, error) {
 
 			s.Mode.Global = &types.GlobalService{} // must always be global
 
-			pluginSpec, err := proto.Marshal(s.TaskTemplate.PluginSpec)
+			ps := runtime.FromAPI(*s.TaskTemplate.PluginSpec)
+			pluginSpec, err := proto.Marshal(&ps)
 			if err != nil {
 				return swarmapi.ServiceSpec{}, err
 			}
@@ -318,7 +319,7 @@ func ServiceSpecToGRPC(s types.ServiceSpec) (swarmapi.ServiceSpec, error) {
 	}
 
 	if numModes > 1 {
-		return swarmapi.ServiceSpec{}, fmt.Errorf("must specify only one service mode")
+		return swarmapi.ServiceSpec{}, errors.New("must specify only one service mode")
 	}
 
 	if s.Mode.Global != nil {
@@ -699,7 +700,8 @@ func taskSpecFromGRPC(taskSpec swarmapi.TaskSpec) (types.TaskSpec, error) {
 				if err := proto.Unmarshal(g.Payload.Value, &p); err != nil {
 					return t, errors.Wrap(err, "error unmarshalling plugin spec")
 				}
-				t.PluginSpec = &p
+				ap := runtime.ToAPI(p)
+				t.PluginSpec = &ap
 			}
 		}
 	case *swarmapi.TaskSpec_Attachment:

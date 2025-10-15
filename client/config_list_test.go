@@ -1,4 +1,4 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
@@ -7,55 +7,42 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/swarm"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
-func TestConfigListUnsupported(t *testing.T) {
-	client := &Client{
-		version: "1.29",
-		client:  &http.Client{},
-	}
-	_, err := client.ConfigList(context.Background(), types.ConfigListOptions{})
-	assert.Check(t, is.Error(err, `"config list" requires API version 1.30, but the Docker daemon API version is 1.29`))
-}
-
 func TestConfigListError(t *testing.T) {
-	client := &Client{
-		version: "1.30",
-		client:  newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := NewClientWithOpts(
+		WithMockClient(errorMock(http.StatusInternalServerError, "Server error")),
+	)
+	assert.NilError(t, err)
 
-	_, err := client.ConfigList(context.Background(), types.ConfigListOptions{})
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	_, err = client.ConfigList(context.Background(), ConfigListOptions{})
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestConfigList(t *testing.T) {
-	expectedURL := "/v1.30/configs"
+	const expectedURL = "/configs"
 
 	listCases := []struct {
-		options             types.ConfigListOptions
+		options             ConfigListOptions
 		expectedQueryParams map[string]string
 	}{
 		{
-			options: types.ConfigListOptions{},
+			options: ConfigListOptions{},
 			expectedQueryParams: map[string]string{
 				"filters": "",
 			},
 		},
 		{
-			options: types.ConfigListOptions{
-				Filters: filters.NewArgs(
-					filters.Arg("label", "label1"),
-					filters.Arg("label", "label2"),
-				),
+			options: ConfigListOptions{
+				Filters: make(Filters).
+					Add("label", "label1").
+					Add("label", "label2"),
 			},
 			expectedQueryParams: map[string]string{
 				"filters": `{"label":{"label1":true,"label2":true}}`,
@@ -63,11 +50,10 @@ func TestConfigList(t *testing.T) {
 		},
 	}
 	for _, listCase := range listCases {
-		client := &Client{
-			version: "1.30",
-			client: newMockClient(func(req *http.Request) (*http.Response, error) {
-				if !strings.HasPrefix(req.URL.Path, expectedURL) {
-					return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
+		client, err := NewClientWithOpts(
+			WithMockClient(func(req *http.Request) (*http.Response, error) {
+				if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+					return nil, err
 				}
 				query := req.URL.Query()
 				for key, expected := range listCase.expectedQueryParams {
@@ -92,14 +78,11 @@ func TestConfigList(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader(content)),
 				}, nil
 			}),
-		}
+		)
+		assert.NilError(t, err)
 
 		configs, err := client.ConfigList(context.Background(), listCase.options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(configs) != 2 {
-			t.Fatalf("expected 2 configs, got %v", configs)
-		}
+		assert.NilError(t, err)
+		assert.Check(t, is.Len(configs, 2))
 	}
 }

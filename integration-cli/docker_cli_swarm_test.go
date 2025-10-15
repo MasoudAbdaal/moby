@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,18 +19,18 @@ import (
 	"time"
 
 	"github.com/cloudflare/cfssl/helpers"
-	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/api/types/versions"
-	"github.com/docker/docker/integration-cli/checker"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/integration-cli/daemon"
-	"github.com/docker/docker/internal/nlwrap"
-	"github.com/docker/docker/libnetwork/driverapi"
-	"github.com/docker/docker/libnetwork/ipamapi"
-	remoteipam "github.com/docker/docker/libnetwork/ipams/remote/api"
-	"github.com/docker/docker/pkg/plugins"
-	"github.com/docker/docker/testutil"
-	testdaemon "github.com/docker/docker/testutil/daemon"
+	"github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
+	"github.com/moby/moby/v2/daemon/libnetwork/ipamapi"
+	remoteipam "github.com/moby/moby/v2/daemon/libnetwork/ipams/remote/api"
+	"github.com/moby/moby/v2/daemon/libnetwork/nlwrap"
+	"github.com/moby/moby/v2/integration-cli/checker"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/integration-cli/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	testdaemon "github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/pkg/plugins"
 	"github.com/moby/swarmkit/v2/ca/keyutils"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
@@ -85,7 +86,6 @@ func (s *DockerSwarmSuite) TestSwarmUpdate(c *testing.T) {
 
 	// passing an invalid external CA fails
 	tempFile := fs.NewFile(c, "testfile", fs.WithContent("fakecert"))
-	defer tempFile.Remove()
 
 	result := cli.Docker(cli.Args("swarm", "update",
 		"--external-ca", fmt.Sprintf("protocol=cfssl,url=https://something.org,cacert=%s", tempFile.Path())),
@@ -107,7 +107,6 @@ func (s *DockerSwarmSuite) TestSwarmInit(c *testing.T) {
 
 	// passing an invalid external CA fails
 	tempFile := fs.NewFile(c, "testfile", fs.WithContent("fakecert"))
-	defer tempFile.Remove()
 
 	result := cli.Docker(cli.Args("swarm", "init", "--cert-expiry", "30h", "--dispatcher-heartbeat", "11s",
 		"--external-ca", fmt.Sprintf("protocol=cfssl,url=https://somethingelse.org,cacert=%s", tempFile.Path())),
@@ -417,7 +416,7 @@ func (s *DockerSwarmSuite) TestSwarmContainerAttachByNetworkId(c *testing.T) {
 	out, err = d.Cmd("network", "rm", "testnet")
 	assert.NilError(c, err, out)
 
-	checkNetwork := func(*testing.T) (interface{}, string) {
+	checkNetwork := func(*testing.T) (any, string) {
 		out, err := d.Cmd("network", "ls")
 		assert.NilError(c, err)
 		return out, ""
@@ -572,7 +571,7 @@ func (s *DockerSwarmSuite) TestSwarmCreateServiceWithNoIngressNetwork(c *testing
 }
 
 // Test case for #24108, also the case from:
-// https://github.com/docker/docker/pull/24620#issuecomment-233715656
+// https://github.com/moby/moby/pull/24620#issuecomment-233715656
 func (s *DockerSwarmSuite) TestSwarmTaskListFilter(c *testing.T) {
 	ctx := testutil.GetContext(c)
 	d := s.AddDaemon(ctx, c, true, true)
@@ -584,7 +583,7 @@ func (s *DockerSwarmSuite) TestSwarmTaskListFilter(c *testing.T) {
 
 	filter := "name=redis-cluster"
 
-	checkNumTasks := func(*testing.T) (interface{}, string) {
+	checkNumTasks := func(*testing.T) (any, string) {
 		out, err := d.Cmd("service", "ps", "--filter", filter, name)
 		assert.NilError(c, err, out)
 		return len(strings.Split(out, "\n")) - 2, "" // includes header and nl in last line
@@ -1053,14 +1052,14 @@ func (s *DockerSwarmSuite) TestDNSConfigUpdate(c *testing.T) {
 	assert.Equal(c, strings.TrimSpace(out), "{[1.2.3.4] [example.com] [timeout:3]}")
 }
 
-func getNodeStatus(c *testing.T, d *daemon.Daemon) swarm.LocalNodeState {
-	ctx := testutil.GetContext(c)
-	info := d.SwarmInfo(ctx, c)
+func getNodeStatus(t *testing.T, d *daemon.Daemon) swarm.LocalNodeState {
+	ctx := testutil.GetContext(t)
+	info := d.SwarmInfo(ctx, t)
 	return info.LocalNodeState
 }
 
-func checkKeyIsEncrypted(d *daemon.Daemon) func(*testing.T) (interface{}, string) {
-	return func(c *testing.T) (interface{}, string) {
+func checkKeyIsEncrypted(d *daemon.Daemon) func(*testing.T) (any, string) {
+	return func(t *testing.T) (any, string) {
 		keyBytes, err := os.ReadFile(filepath.Join(d.Folder, "root", "swarm", "certificates", "swarm-node.key"))
 		if err != nil {
 			return fmt.Errorf("error reading key: %v", err), ""
@@ -1068,27 +1067,27 @@ func checkKeyIsEncrypted(d *daemon.Daemon) func(*testing.T) (interface{}, string
 
 		keyBlock, _ := pem.Decode(keyBytes)
 		if keyBlock == nil {
-			return fmt.Errorf("invalid PEM-encoded private key"), ""
+			return errors.New("invalid PEM-encoded private key"), ""
 		}
 
 		return keyutils.IsEncryptedPEMBlock(keyBlock), ""
 	}
 }
 
-func checkSwarmLockedToUnlocked(ctx context.Context, c *testing.T, d *daemon.Daemon) {
+func checkSwarmLockedToUnlocked(ctx context.Context, t *testing.T, d *daemon.Daemon) {
 	// Wait for the PEM file to become unencrypted
-	poll.WaitOn(c, pollCheck(c, checkKeyIsEncrypted(d), checker.Equals(false)), poll.WithTimeout(defaultReconciliationTimeout))
+	poll.WaitOn(t, pollCheck(t, checkKeyIsEncrypted(d), checker.Equals(false)), poll.WithTimeout(defaultReconciliationTimeout))
 
-	d.RestartNode(c)
-	poll.WaitOn(c, pollCheck(c, d.CheckLocalNodeState(ctx), checker.Equals(swarm.LocalNodeStateActive)), poll.WithTimeout(time.Second))
+	d.RestartNode(t)
+	poll.WaitOn(t, pollCheck(t, d.CheckLocalNodeState(ctx), checker.Equals(swarm.LocalNodeStateActive)), poll.WithTimeout(time.Second))
 }
 
-func checkSwarmUnlockedToLocked(ctx context.Context, c *testing.T, d *daemon.Daemon) {
+func checkSwarmUnlockedToLocked(ctx context.Context, t *testing.T, d *daemon.Daemon) {
 	// Wait for the PEM file to become encrypted
-	poll.WaitOn(c, pollCheck(c, checkKeyIsEncrypted(d), checker.Equals(true)), poll.WithTimeout(defaultReconciliationTimeout))
+	poll.WaitOn(t, pollCheck(t, checkKeyIsEncrypted(d), checker.Equals(true)), poll.WithTimeout(defaultReconciliationTimeout))
 
-	d.RestartNode(c)
-	poll.WaitOn(c, pollCheck(c, d.CheckLocalNodeState(ctx), checker.Equals(swarm.LocalNodeStateLocked)), poll.WithTimeout(time.Second))
+	d.RestartNode(t)
+	poll.WaitOn(t, pollCheck(t, d.CheckLocalNodeState(ctx), checker.Equals(swarm.LocalNodeStateLocked)), poll.WithTimeout(time.Second))
 }
 
 func (s *DockerSwarmSuite) TestUnlockEngineAndUnlockedSwarm(c *testing.T) {
@@ -1295,7 +1294,7 @@ func (s *DockerSwarmSuite) TestSwarmJoinPromoteLocked(c *testing.T) {
 	// (because we never want a manager TLS key to be on disk unencrypted if the cluster
 	// is set to autolock)
 	poll.WaitOn(c, pollCheck(c, d3.CheckControlAvailable(ctx), checker.False()), poll.WithTimeout(defaultReconciliationTimeout))
-	poll.WaitOn(c, pollCheck(c, func(c *testing.T) (interface{}, string) {
+	poll.WaitOn(c, pollCheck(c, func(t *testing.T) (any, string) {
 		certBytes, err := os.ReadFile(filepath.Join(d3.Folder, "root", "swarm", "certificates", "swarm-node.crt"))
 		if err != nil {
 			return "", fmt.Sprintf("error: %v", err)
@@ -1600,7 +1599,7 @@ func (s *DockerSwarmSuite) TestSwarmNetworkCreateIssue27866(c *testing.T) {
 	assert.NilError(c, err, "out: %v", out)
 }
 
-// Test case for https://github.com/docker/docker/pull/27938#issuecomment-265768303
+// Test case for https://github.com/moby/moby/pull/27938#issuecomment-265768303
 // This test creates two networks with the same name sequentially, with various drivers.
 // Since the operations in this test are done sequentially, the 2nd call should fail with
 // "network with name FOO already exists".
@@ -1803,21 +1802,21 @@ func (s *DockerSwarmSuite) TestSwarmJoinLeave(c *testing.T) {
 
 const defaultRetryCount = 10
 
-func waitForEvent(c *testing.T, d *daemon.Daemon, since string, filter string, event string, retry int) string {
+func waitForEvent(t *testing.T, d *daemon.Daemon, since string, filter string, event string, retry int) string {
 	if retry < 1 {
-		c.Fatalf("retry count %d is invalid. It should be no less than 1", retry)
+		t.Fatalf("retry count %d is invalid. It should be no less than 1", retry)
 		return ""
 	}
 	var out string
 	for i := 0; i < retry; i++ {
-		until := daemonUnixTime(c)
+		until := daemonUnixTime(t)
 		var err error
-		if len(filter) > 0 {
+		if filter != "" {
 			out, err = d.Cmd("events", "--since", since, "--until", until, filter)
 		} else {
 			out, err = d.Cmd("events", "--since", since, "--until", until)
 		}
-		assert.NilError(c, err, out)
+		assert.NilError(t, err, out)
 		if strings.Contains(out, event) {
 			return strings.TrimSpace(out)
 		}
@@ -1826,7 +1825,7 @@ func waitForEvent(c *testing.T, d *daemon.Daemon, since string, filter string, e
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
-	c.Fatalf("docker events output '%s' doesn't contain event '%s'", out, event)
+	t.Fatalf("docker events output '%s' doesn't contain event '%s'", out, event)
 	return ""
 }
 
@@ -2025,14 +2024,14 @@ func (s *DockerSwarmSuite) TestSwarmClusterEventsConfig(c *testing.T) {
 	waitForEvent(c, d, t1, "-f type=config", "config remove "+id, defaultRetryCount)
 }
 
-func getUnlockKey(d *daemon.Daemon, c *testing.T, autolockOutput string) string {
+func getUnlockKey(d *daemon.Daemon, t *testing.T, autolockOutput string) string {
 	unlockKey, err := d.Cmd("swarm", "unlock-key", "-q")
-	assert.Assert(c, err == nil, unlockKey)
+	assert.Assert(t, err == nil, unlockKey)
 	unlockKey = strings.TrimSuffix(unlockKey, "\n")
 
 	// Check that "docker swarm init --autolock" or "docker swarm update --autolock"
 	// contains all the expected strings, including the unlock key
-	assert.Assert(c, strings.Contains(autolockOutput, "docker swarm unlock"), autolockOutput)
-	assert.Assert(c, strings.Contains(autolockOutput, unlockKey), autolockOutput)
+	assert.Assert(t, strings.Contains(autolockOutput, "docker swarm unlock"), autolockOutput)
+	assert.Assert(t, strings.Contains(autolockOutput, unlockKey), autolockOutput)
 	return unlockKey
 }

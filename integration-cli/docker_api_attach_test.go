@@ -10,14 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
 	"github.com/docker/go-connections/sockets"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"github.com/pkg/errors"
 	"golang.org/x/net/websocket"
 	"gotest.tools/v3/assert"
@@ -186,7 +185,7 @@ func (s *DockerAPISuite) TestPostContainersAttach(c *testing.T) {
 	cid = strings.TrimSpace(cid)
 
 	// Make sure we don't see "hello" if Logs is false
-	attachOpts := container.AttachOptions{
+	attachOpts := client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  true,
 		Stdout: true,

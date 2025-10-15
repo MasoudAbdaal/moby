@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -9,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/integration-cli/cli"
-	"github.com/docker/docker/testutil"
+	"github.com/moby/moby/v2/integration-cli/cli"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -19,12 +20,12 @@ type DockerCLIPortSuite struct {
 	ds *DockerSuite
 }
 
-func (s *DockerCLIPortSuite) TearDownTest(ctx context.Context, c *testing.T) {
-	s.ds.TearDownTest(ctx, c)
+func (s *DockerCLIPortSuite) TearDownTest(ctx context.Context, t *testing.T) {
+	s.ds.TearDownTest(ctx, t)
 }
 
-func (s *DockerCLIPortSuite) OnTimeout(c *testing.T) {
-	s.ds.OnTimeout(c)
+func (s *DockerCLIPortSuite) OnTimeout(t *testing.T) {
+	s.ds.OnTimeout(t)
 }
 
 func (s *DockerCLIPortSuite) TestPortList(c *testing.T) {
@@ -163,10 +164,10 @@ func (s *DockerCLIPortSuite) TestPortList(c *testing.T) {
 	cli.DockerCmd(c, "rm", "-f", id)
 }
 
-func assertPortList(c *testing.T, out string, expected []string) {
-	c.Helper()
+func assertPortList(t *testing.T, out string, expected []string) {
+	t.Helper()
 	lines := strings.Split(strings.Trim(out, "\n "), "\n")
-	assert.Assert(c, is.Len(lines, len(expected)), "expected: %s", strings.Join(expected, ", "))
+	assert.Assert(t, is.Len(lines, len(expected)), "expected: %s", strings.Join(expected, ", "))
 
 	sort.Strings(lines)
 	sort.Strings(expected)
@@ -184,7 +185,7 @@ func assertPortList(c *testing.T, out string, expected []string) {
 		if lines[i] == expected[i] {
 			continue
 		}
-		assert.Equal(c, lines[i], oldFormat(expected[i]))
+		assert.Equal(t, lines[i], oldFormat(expected[i]))
 	}
 }
 
@@ -196,11 +197,11 @@ func assertPortRange(ctx context.Context, id string, expectedTCP, expectedUDP []
 	}
 
 	var validTCP, validUDP bool
-	for portAndProto, binding := range inspect.NetworkSettings.Ports {
-		if portAndProto.Proto() == "tcp" && len(expectedTCP) == 0 {
+	for port, binding := range inspect.NetworkSettings.Ports {
+		if port.Proto() == "tcp" && len(expectedTCP) == 0 {
 			continue
 		}
-		if portAndProto.Proto() == "udp" && len(expectedTCP) == 0 {
+		if port.Proto() == "udp" && len(expectedTCP) == 0 {
 			continue
 		}
 
@@ -225,16 +226,16 @@ func assertPortRange(ctx context.Context, id string, expectedTCP, expectedUDP []
 		}
 	}
 	if !validTCP {
-		return fmt.Errorf("tcp port not found")
+		return errors.New("tcp port not found")
 	}
 	if !validUDP {
-		return fmt.Errorf("udp port not found")
+		return errors.New("udp port not found")
 	}
 	return nil
 }
 
-func stopRemoveContainer(id string, c *testing.T) {
-	cli.DockerCmd(c, "rm", "-f", id)
+func stopRemoveContainer(id string, t *testing.T) {
+	cli.DockerCmd(t, "rm", "-f", id)
 }
 
 func (s *DockerCLIPortSuite) TestUnpublishedPortsInPsOutput(c *testing.T) {

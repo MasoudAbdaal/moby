@@ -1,20 +1,33 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
-	"github.com/docker/docker/api/types"
+	"github.com/moby/moby/api/types/common"
 )
 
-// transportFunc allows us to inject a mock transport for testing. We define it
-// here so we can detect the tlsconfig and return nil for only this type.
-type transportFunc func(*http.Request) (*http.Response, error)
+// defaultAPIPath is the API path prefix for the default API version used.
+const defaultAPIPath = "/v" + MaxAPIVersion
 
-func (tf transportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return tf(req)
+// assertRequest checks for the request method and path. If the expected
+// path does not contain a version prefix, it is prefixed with the current API
+// version.
+func assertRequest(req *http.Request, expMethod string, expectedPath string) error {
+	if !strings.HasPrefix(expectedPath, "/v1.") {
+		expectedPath = defaultAPIPath + expectedPath
+	}
+	if !strings.HasPrefix(req.URL.Path, expectedPath) {
+		return fmt.Errorf("expected URL '%s', got '%s'", expectedPath, req.URL.Path)
+	}
+	if req.Method != expMethod {
+		return fmt.Errorf("expected %s method, got %s", expMethod, req.Method)
+	}
+	return nil
 }
 
 func transportEnsureBody(f transportFunc) transportFunc {
@@ -27,12 +40,11 @@ func transportEnsureBody(f transportFunc) transportFunc {
 	}
 }
 
-func newMockClient(doer func(*http.Request) (*http.Response, error)) *http.Client {
-	return &http.Client{
-		// Some tests return a response with a nil body, this is incorrect semantically and causes a panic with wrapper transports (such as otelhttp's)
-		// Wrap the doer to ensure a body is always present even if it is empty.
+// WithMockClient is a test helper that allows you to inject a mock client for testing.
+func WithMockClient(doer func(*http.Request) (*http.Response, error)) Opt {
+	return WithHTTPClient(&http.Client{
 		Transport: transportEnsureBody(transportFunc(doer)),
-	}
+	})
 }
 
 func errorMock(statusCode int, message string) func(req *http.Request) (*http.Response, error) {
@@ -40,7 +52,7 @@ func errorMock(statusCode int, message string) func(req *http.Request) (*http.Re
 		header := http.Header{}
 		header.Set("Content-Type", "application/json")
 
-		body, err := json.Marshal(&types.ErrorResponse{
+		body, err := json.Marshal(&common.ErrorResponse{
 			Message: message,
 		})
 		if err != nil {

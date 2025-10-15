@@ -3,11 +3,11 @@ package container
 import (
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -36,7 +36,7 @@ func TestContainerKillOnDaemonStart(t *testing.T) {
 	// Sadly this means the test will take longer, but at least this test can be parallelized.
 	id := container.Run(ctx, t, apiClient, container.WithCmd("/bin/sh", "-c", "while true; do echo hello; sleep 1; done"))
 	defer func() {
-		err := apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+		err := apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 		assert.NilError(t, err)
 	}()
 
@@ -71,15 +71,16 @@ func TestNetworkStateCleanupOnDaemonStart(t *testing.T) {
 	defer d.Stop(t)
 
 	apiClient := d.NewClientT(t)
+	mappedPort := network.MustParsePort("80/tcp")
 
 	// The intention of this container is to ignore stop signals.
 	// Sadly this means the test will take longer, but at least this test can be parallelized.
 	cid := container.Run(ctx, t, apiClient,
 		container.WithExposedPorts("80/tcp"),
-		container.WithPortMap(nat.PortMap{"80/tcp": {{}}}),
+		container.WithPortMap(network.PortMap{mappedPort: {{}}}),
 		container.WithCmd("/bin/sh", "-c", "while true; do echo hello; sleep 1; done"))
 	defer func() {
-		err := apiClient.ContainerRemove(ctx, cid, containertypes.RemoveOptions{Force: true})
+		err := apiClient.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
 		assert.NilError(t, err)
 	}()
 
@@ -87,7 +88,7 @@ func TestNetworkStateCleanupOnDaemonStart(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, inspect.NetworkSettings.SandboxID != "")
 	assert.Assert(t, inspect.NetworkSettings.SandboxKey != "")
-	assert.Assert(t, inspect.NetworkSettings.Ports["80/tcp"] != nil)
+	assert.Assert(t, inspect.NetworkSettings.Ports[mappedPort] != nil)
 
 	assert.NilError(t, d.Kill())
 	d.Start(t)
@@ -96,5 +97,5 @@ func TestNetworkStateCleanupOnDaemonStart(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, inspect.NetworkSettings.SandboxID == "")
 	assert.Assert(t, inspect.NetworkSettings.SandboxKey == "")
-	assert.Assert(t, is.Nil(inspect.NetworkSettings.Ports["80/tcp"]))
+	assert.Assert(t, is.Nil(inspect.NetworkSettings.Ports[mappedPort]))
 }

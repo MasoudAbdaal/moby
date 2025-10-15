@@ -16,10 +16,10 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/docker/docker/api/types/backend"
-	"github.com/docker/docker/image"
-	imagespec "github.com/moby/docker-image-spec/specs-go/v1"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/go-archive"
+	"github.com/moby/moby/v2/daemon/internal/image"
+	"github.com/moby/moby/v2/daemon/server/backend"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +38,7 @@ func (i *ImageService) CommitImage(ctx context.Context, cc backend.CommitConfig)
 	cs := i.content
 
 	var parentManifest ocispec.Manifest
-	var parentImage imagespec.DockerOCIImage
+	var parentImage dockerspec.DockerOCIImage
 
 	// ImageManifest can be nil when committing an image with base FROM scratch
 	if container.ImageManifest != nil {
@@ -93,7 +93,7 @@ func (i *ImageService) CommitImage(ctx context.Context, cc backend.CommitConfig)
 
 // generateCommitImageConfig generates an OCI Image config based on the
 // container's image and the CommitConfig options.
-func generateCommitImageConfig(baseConfig imagespec.DockerOCIImage, diffID digest.Digest, opts backend.CommitConfig) imagespec.DockerOCIImage {
+func generateCommitImageConfig(baseConfig dockerspec.DockerOCIImage, diffID digest.Digest, opts backend.CommitConfig) dockerspec.DockerOCIImage {
 	if opts.Author == "" {
 		opts.Author = baseConfig.Author
 	}
@@ -116,7 +116,7 @@ func generateCommitImageConfig(baseConfig imagespec.DockerOCIImage, diffID diges
 		diffIds = append(diffIds, diffID)
 	}
 
-	return imagespec.DockerOCIImage{
+	return dockerspec.DockerOCIImage{
 		Image: ocispec.Image{
 			Platform: ocispec.Platform{
 				Architecture: arch,
@@ -239,7 +239,7 @@ func (i *ImageService) createDiff(ctx context.Context, name string, sn snapshots
 
 	diffIDStr, ok := cinfo.Labels["containerd.io/uncompressed"]
 	if !ok {
-		return nil, "", fmt.Errorf("invalid differ response with no diffID")
+		return nil, "", errors.New("invalid differ response with no diffID")
 	}
 
 	diffID, err := digest.Parse(diffIDStr)

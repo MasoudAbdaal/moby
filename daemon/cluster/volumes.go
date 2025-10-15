@@ -1,12 +1,14 @@
-package cluster // import "github.com/docker/docker/daemon/cluster"
+package cluster
 
 import (
 	"context"
 	"fmt"
 
-	volumetypes "github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/daemon/cluster/convert"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	volumetypes "github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/v2/daemon/cluster/convert"
+	"github.com/moby/moby/v2/daemon/server/volumebackend"
+	"github.com/moby/moby/v2/errdefs"
 	swarmapi "github.com/moby/swarmkit/v2/api"
 	"google.golang.org/grpc"
 )
@@ -15,7 +17,7 @@ import (
 func (c *Cluster) GetVolume(nameOrID string) (volumetypes.Volume, error) {
 	var volume *swarmapi.Volume
 
-	if err := c.lockedManagerAction(func(ctx context.Context, state nodeState) error {
+	if err := c.lockedManagerAction(context.TODO(), func(ctx context.Context, state nodeState) error {
 		v, err := getVolume(ctx, state.controlClient, nameOrID)
 		if err != nil {
 			return err
@@ -29,9 +31,9 @@ func (c *Cluster) GetVolume(nameOrID string) (volumetypes.Volume, error) {
 }
 
 // GetVolumes returns all of the volumes matching the given options from a swarm cluster.
-func (c *Cluster) GetVolumes(options volumetypes.ListOptions) ([]*volumetypes.Volume, error) {
+func (c *Cluster) GetVolumes(options volumebackend.ListOptions) ([]*volumetypes.Volume, error) {
 	var volumes []*volumetypes.Volume
-	if err := c.lockedManagerAction(func(ctx context.Context, state nodeState) error {
+	if err := c.lockedManagerAction(context.TODO(), func(ctx context.Context, state nodeState) error {
 		r, err := state.controlClient.ListVolumes(
 			ctx, &swarmapi.ListVolumesRequest{},
 			grpc.MaxCallRecvMsgSize(defaultRecvSizeForListResponse),
@@ -59,7 +61,7 @@ func (c *Cluster) GetVolumes(options volumetypes.ListOptions) ([]*volumetypes.Vo
 // Returns the volume ID if creation is successful, or an error if not.
 func (c *Cluster) CreateVolume(v volumetypes.CreateOptions) (*volumetypes.Volume, error) {
 	var resp *swarmapi.CreateVolumeResponse
-	if err := c.lockedManagerAction(func(ctx context.Context, state nodeState) error {
+	if err := c.lockedManagerAction(context.TODO(), func(ctx context.Context, state nodeState) error {
 		volumeSpec := convert.VolumeCreateToGRPC(&v)
 
 		r, err := state.controlClient.CreateVolume(
@@ -87,10 +89,10 @@ func (c *Cluster) CreateVolume(v volumetypes.CreateOptions) (*volumetypes.Volume
 
 // RemoveVolume removes a volume from the swarm cluster.
 func (c *Cluster) RemoveVolume(nameOrID string, force bool) error {
-	return c.lockedManagerAction(func(ctx context.Context, state nodeState) error {
+	return c.lockedManagerAction(context.TODO(), func(ctx context.Context, state nodeState) error {
 		volume, err := getVolume(ctx, state.controlClient, nameOrID)
 		if err != nil {
-			if force && errdefs.IsNotFound(err) {
+			if force && cerrdefs.IsNotFound(err) {
 				return nil
 			}
 			return err
@@ -106,7 +108,7 @@ func (c *Cluster) RemoveVolume(nameOrID string, force bool) error {
 
 // UpdateVolume updates a volume in the swarm cluster.
 func (c *Cluster) UpdateVolume(nameOrID string, version uint64, volume volumetypes.UpdateOptions) error {
-	return c.lockedManagerAction(func(ctx context.Context, state nodeState) error {
+	return c.lockedManagerAction(context.TODO(), func(ctx context.Context, state nodeState) error {
 		v, err := getVolume(ctx, state.controlClient, nameOrID)
 		if err != nil {
 			return err

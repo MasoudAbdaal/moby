@@ -1,16 +1,19 @@
-package system // import "github.com/docker/docker/integration/system"
+package system
 
 import (
-	"strings"
+	"net/netip"
 	"testing"
 
-	"github.com/docker/docker/api/types"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/moby/moby/api/types/build"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -27,15 +30,15 @@ func TestDiskUsage(t *testing.T) {
 	defer d.Stop(t)
 	apiClient := d.NewClientT(t)
 
-	var stepDU types.DiskUsage
+	var stepDU system.DiskUsage
 	for _, step := range []struct {
 		doc  string
-		next func(t *testing.T, prev types.DiskUsage) types.DiskUsage
+		next func(t *testing.T, prev system.DiskUsage) system.DiskUsage
 	}{
 		{
 			doc: "empty",
-			next: func(t *testing.T, _ types.DiskUsage) types.DiskUsage {
-				du, err := apiClient.DiskUsage(ctx, types.DiskUsageOptions{})
+			next: func(t *testing.T, _ system.DiskUsage) system.DiskUsage {
+				du, err := apiClient.DiskUsage(ctx, client.DiskUsageOptions{})
 				assert.NilError(t, err)
 
 				expectedLayersSize := int64(0)
@@ -47,46 +50,40 @@ func TestDiskUsage(t *testing.T) {
 					}
 				}
 
-				assert.DeepEqual(t, du, types.DiskUsage{
+				assert.DeepEqual(t, du, system.DiskUsage{
 					LayersSize: expectedLayersSize,
 					Images:     []*image.Summary{},
 					Containers: []*containertypes.Summary{},
 					Volumes:    []*volume.Volume{},
-					BuildCache: []*types.BuildCache{},
+					BuildCache: []*build.CacheRecord{},
 				})
 				return du
 			},
 		},
 		{
 			doc: "after LoadBusybox",
-			next: func(t *testing.T, _ types.DiskUsage) types.DiskUsage {
+			next: func(t *testing.T, _ system.DiskUsage) system.DiskUsage {
 				d.LoadBusybox(ctx, t)
 
-				du, err := apiClient.DiskUsage(ctx, types.DiskUsageOptions{})
+				du, err := apiClient.DiskUsage(ctx, client.DiskUsageOptions{})
 				assert.NilError(t, err)
 				assert.Assert(t, du.LayersSize > 0)
 				assert.Equal(t, len(du.Images), 1)
 				assert.Equal(t, len(du.Images[0].RepoTags), 1)
 				assert.Check(t, is.Equal(du.Images[0].RepoTags[0], "busybox:latest"))
 
-				// Image size is layer size + content size, should be greater than total layer size
-				assert.Assert(t, du.Images[0].Size >= du.LayersSize)
-
-				// If size is greater, than content exists and should have a repodigest
-				if du.Images[0].Size > du.LayersSize {
-					assert.Equal(t, len(du.Images[0].RepoDigests), 1)
-					assert.Check(t, strings.HasPrefix(du.Images[0].RepoDigests[0], "busybox@"))
-				}
+				// Image size is layer size + content size. Content size is included in layers size.
+				assert.Equal(t, du.Images[0].Size, du.LayersSize)
 
 				return du
 			},
 		},
 		{
 			doc: "after container.Run",
-			next: func(t *testing.T, prev types.DiskUsage) types.DiskUsage {
+			next: func(t *testing.T, prev system.DiskUsage) system.DiskUsage {
 				cID := container.Run(ctx, t, apiClient)
 
-				du, err := apiClient.DiskUsage(ctx, types.DiskUsageOptions{})
+				du, err := apiClient.DiskUsage(ctx, client.DiskUsageOptions{})
 				assert.NilError(t, err)
 				assert.Equal(t, len(du.Containers), 1)
 				assert.Equal(t, len(du.Containers[0].Names), 1)
@@ -103,10 +100,6 @@ func TestDiskUsage(t *testing.T) {
 				assert.Check(t, is.Equal(du.Containers[0].Image, "busybox"))
 				assert.Check(t, is.Equal(du.Containers[0].ImageID, prev.Images[0].ID))
 
-				// The rootfs size should be equivalent to all the layers,
-				// previously used prev.Images[0].Size, which may differ from content data
-				assert.Check(t, is.Equal(du.Containers[0].SizeRootFs, du.LayersSize))
-
 				// ImageManifestDescriptor should NOT be populated.
 				assert.Check(t, is.Nil(du.Containers[0].ImageManifestDescriptor))
 
@@ -120,76 +113,76 @@ func TestDiskUsage(t *testing.T) {
 
 			for _, tc := range []struct {
 				doc      string
-				options  types.DiskUsageOptions
-				expected types.DiskUsage
+				options  client.DiskUsageOptions
+				expected system.DiskUsage
 			}{
 				{
 					doc: "container types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ContainerObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ContainerObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						Containers: stepDU.Containers,
 					},
 				},
 				{
 					doc: "image types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ImageObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ImageObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						LayersSize: stepDU.LayersSize,
 						Images:     stepDU.Images,
 					},
 				},
 				{
 					doc: "volume types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.VolumeObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.VolumeObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						Volumes: stepDU.Volumes,
 					},
 				},
 				{
 					doc: "build-cache types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.BuildCacheObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.BuildCacheObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						BuildCache: stepDU.BuildCache,
 					},
 				},
 				{
 					doc: "container, volume types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ContainerObject,
-							types.VolumeObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ContainerObject,
+							system.VolumeObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						Containers: stepDU.Containers,
 						Volumes:    stepDU.Volumes,
 					},
 				},
 				{
 					doc: "image, build-cache types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ImageObject,
-							types.BuildCacheObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ImageObject,
+							system.BuildCacheObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						LayersSize: stepDU.LayersSize,
 						Images:     stepDU.Images,
 						BuildCache: stepDU.BuildCache,
@@ -197,14 +190,14 @@ func TestDiskUsage(t *testing.T) {
 				},
 				{
 					doc: "container, volume, build-cache types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ContainerObject,
-							types.VolumeObject,
-							types.BuildCacheObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ContainerObject,
+							system.VolumeObject,
+							system.BuildCacheObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						Containers: stepDU.Containers,
 						Volumes:    stepDU.Volumes,
 						BuildCache: stepDU.BuildCache,
@@ -212,14 +205,14 @@ func TestDiskUsage(t *testing.T) {
 				},
 				{
 					doc: "image, volume, build-cache types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ImageObject,
-							types.VolumeObject,
-							types.BuildCacheObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ImageObject,
+							system.VolumeObject,
+							system.BuildCacheObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						LayersSize: stepDU.LayersSize,
 						Images:     stepDU.Images,
 						Volumes:    stepDU.Volumes,
@@ -228,14 +221,14 @@ func TestDiskUsage(t *testing.T) {
 				},
 				{
 					doc: "container, image, volume types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ContainerObject,
-							types.ImageObject,
-							types.VolumeObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ContainerObject,
+							system.ImageObject,
+							system.VolumeObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						LayersSize: stepDU.LayersSize,
 						Containers: stepDU.Containers,
 						Images:     stepDU.Images,
@@ -244,15 +237,15 @@ func TestDiskUsage(t *testing.T) {
 				},
 				{
 					doc: "container, image, volume, build-cache types",
-					options: types.DiskUsageOptions{
-						Types: []types.DiskUsageObject{
-							types.ContainerObject,
-							types.ImageObject,
-							types.VolumeObject,
-							types.BuildCacheObject,
+					options: client.DiskUsageOptions{
+						Types: []system.DiskUsageObject{
+							system.ContainerObject,
+							system.ImageObject,
+							system.VolumeObject,
+							system.BuildCacheObject,
 						},
 					},
-					expected: types.DiskUsage{
+					expected: system.DiskUsage{
 						LayersSize: stepDU.LayersSize,
 						Containers: stepDU.Containers,
 						Images:     stepDU.Images,
@@ -267,7 +260,7 @@ func TestDiskUsage(t *testing.T) {
 
 					du, err := apiClient.DiskUsage(ctx, tc.options)
 					assert.NilError(t, err)
-					assert.DeepEqual(t, du, tc.expected)
+					assert.DeepEqual(t, du, tc.expected, cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{}))
 				})
 			}
 		})

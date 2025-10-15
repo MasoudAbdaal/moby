@@ -1,11 +1,11 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"testing"
 	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/integration/internal/container"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/integration/internal/container"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/poll"
 	"gotest.tools/v3/skip"
@@ -38,7 +38,7 @@ func TestDiffStoppedContainer(t *testing.T) {
 
 	cID := container.Run(ctx, t, apiClient, container.WithCmd("sh", "-c", `mkdir /foo; echo xyzzy > /foo/bar`))
 
-	poll.WaitOn(t, container.IsInState(ctx, apiClient, cID, "exited"), poll.WithTimeout(60*time.Second))
+	poll.WaitOn(t, container.IsInState(ctx, apiClient, cID, containertypes.StateExited), poll.WithTimeout(60*time.Second))
 
 	expected := []containertypes.FilesystemChange{
 		{Kind: containertypes.ChangeAdd, Path: "/foo"},

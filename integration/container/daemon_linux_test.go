@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"context"
@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	realcontainer "github.com/docker/docker/container"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
+	realcontainer "github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"golang.org/x/sys/unix"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -47,9 +47,9 @@ func TestContainerStartOnDaemonRestart(t *testing.T) {
 	c := d.NewClientT(t)
 
 	cID := container.Create(ctx, t, c)
-	defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 
-	err := c.ContainerStart(ctx, cID, containertypes.StartOptions{})
+	err := c.ContainerStart(ctx, cID, client.ContainerStartOptions{})
 	assert.Check(t, err, "error starting test container")
 
 	inspect, err := c.ContainerInspect(ctx, cID)
@@ -68,7 +68,7 @@ func TestContainerStartOnDaemonRestart(t *testing.T) {
 
 	d.Start(t, "--iptables=false", "--ip6tables=false")
 
-	err = c.ContainerStart(ctx, cID, containertypes.StartOptions{})
+	err = c.ContainerStart(ctx, cID, client.ContainerStartOptions{})
 	assert.Check(t, err, "failed to start test container")
 }
 
@@ -105,7 +105,7 @@ func TestDaemonRestartIpcMode(t *testing.T) {
 		container.WithCmd("top"),
 		container.WithRestartPolicy(containertypes.RestartPolicyAlways),
 	)
-	defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 
 	inspect, err := c.ContainerInspect(ctx, cID)
 	assert.NilError(t, err)
@@ -121,7 +121,7 @@ func TestDaemonRestartIpcMode(t *testing.T) {
 
 	// check a new container is created with shareable ipc mode as per new daemon default
 	cID = container.Run(ctx, t, c)
-	defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 
 	inspect, err = c.ContainerInspect(ctx, cID)
 	assert.NilError(t, err)
@@ -153,10 +153,10 @@ func TestDaemonHostGatewayIP(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, is.Len(res.Stderr(), 0))
 	assert.Equal(t, 0, res.ExitCode)
-	inspect, err := c.NetworkInspect(ctx, "bridge", network.InspectOptions{})
+	inspect, err := c.NetworkInspect(ctx, "bridge", client.NetworkInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Contains(res.Stdout(), inspect.IPAM.Config[0].Gateway))
-	c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	assert.Check(t, is.Contains(res.Stdout(), inspect.IPAM.Config[0].Gateway.String()))
+	c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 	d.Stop(t)
 
 	// Verify the IP in /etc/hosts is same as host-gateway-ip
@@ -169,7 +169,7 @@ func TestDaemonHostGatewayIP(t *testing.T) {
 	assert.Assert(t, is.Len(res.Stderr(), 0))
 	assert.Equal(t, 0, res.ExitCode)
 	assert.Check(t, is.Contains(res.Stdout(), "6.7.8.9"))
-	c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 	d.Stop(t)
 }
 
@@ -208,7 +208,7 @@ func TestRestartDaemonWithRestartingContainer(t *testing.T) {
 	d.Stop(t)
 
 	d.TamperWithContainerConfig(t, id, func(c *realcontainer.Container) {
-		c.SetRestarting(&realcontainer.ExitStatus{ExitCode: 1})
+		c.State.SetRestarting(&realcontainer.ExitStatus{ExitCode: 1})
 		c.HasBeenStartedBefore = true
 	})
 
@@ -256,7 +256,7 @@ func TestHardRestartWhenContainerIsRunning(t *testing.T) {
 
 	for _, id := range []string{noPolicy, onFailure} {
 		d.TamperWithContainerConfig(t, id, func(c *realcontainer.Container) {
-			c.SetRunning(nil, nil, time.Now())
+			c.State.SetRunning(nil, nil, time.Now())
 			c.HasBeenStartedBefore = true
 		})
 	}
@@ -269,7 +269,7 @@ func TestHardRestartWhenContainerIsRunning(t *testing.T) {
 		defer cancel()
 		inspect, err := apiClient.ContainerInspect(ctx, noPolicy)
 		assert.NilError(t, err)
-		assert.Check(t, is.Equal(inspect.State.Status, "exited"))
+		assert.Check(t, is.Equal(inspect.State.Status, containertypes.StateExited))
 		assert.Check(t, is.Equal(inspect.State.ExitCode, 255))
 		finishedAt, err := time.Parse(time.RFC3339Nano, inspect.State.FinishedAt)
 		if assert.Check(t, err) {
@@ -283,7 +283,7 @@ func TestHardRestartWhenContainerIsRunning(t *testing.T) {
 		defer cancel()
 		inspect, err := apiClient.ContainerInspect(ctx, onFailure)
 		assert.NilError(t, err)
-		assert.Check(t, is.Equal(inspect.State.Status, "running"))
+		assert.Check(t, is.Equal(inspect.State.Status, containertypes.StateRunning))
 		assert.Check(t, is.Equal(inspect.State.ExitCode, 0))
 		finishedAt, err := time.Parse(time.RFC3339Nano, inspect.State.FinishedAt)
 		if assert.Check(t, err) {
@@ -291,6 +291,6 @@ func TestHardRestartWhenContainerIsRunning(t *testing.T) {
 		}
 
 		stopTimeout := 0
-		assert.Assert(t, apiClient.ContainerStop(ctx, onFailure, containertypes.StopOptions{Timeout: &stopTimeout}))
+		assert.Assert(t, apiClient.ContainerStop(ctx, onFailure, client.ContainerStopOptions{Timeout: &stopTimeout}))
 	})
 }

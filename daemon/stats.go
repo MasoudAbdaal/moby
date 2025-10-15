@@ -1,4 +1,4 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"runtime"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/docker/docker/api/types/backend"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/errdefs"
 )
 
 // ContainerStats writes information about the container to the stream
@@ -26,11 +27,9 @@ func (daemon *Daemon) ContainerStats(ctx context.Context, prefixOrName string, c
 		return errdefs.InvalidParameter(errors.New("cannot have stream=true and one-shot=true"))
 	}
 
-	enc := json.NewEncoder(config.OutStream())
-
 	// If the container is either not running or restarting and requires no stream, return an empty stats.
-	if (!ctr.IsRunning() || ctr.IsRestarting()) && !config.Stream {
-		return enc.Encode(&containertypes.StatsResponse{
+	if !config.Stream && (!ctr.State.IsRunning() || ctr.State.IsRestarting()) {
+		return json.NewEncoder(config.OutStream()).Encode(&containertypes.StatsResponse{
 			Name: ctr.Name,
 			ID:   ctr.ID,
 		})
@@ -42,12 +41,12 @@ func (daemon *Daemon) ContainerStats(ctx context.Context, prefixOrName string, c
 		if err != nil {
 			return err
 		}
-		return enc.Encode(stats)
+		return json.NewEncoder(config.OutStream()).Encode(stats)
 	}
 
 	var preCPUStats containertypes.CPUStats
 	var preRead time.Time
-	getStatJSON := func(v interface{}) *containertypes.StatsResponse {
+	getStatJSON := func(v any) *containertypes.StatsResponse {
 		ss := v.(containertypes.StatsResponse)
 		ss.Name = ctr.Name
 		ss.ID = ctr.ID
@@ -63,6 +62,7 @@ func (daemon *Daemon) ContainerStats(ctx context.Context, prefixOrName string, c
 
 	noStreamFirstFrame := !config.OneShot
 
+	enc := json.NewEncoder(config.OutStream())
 	for {
 		select {
 		case v, ok := <-updates:
@@ -90,17 +90,17 @@ func (daemon *Daemon) ContainerStats(ctx context.Context, prefixOrName string, c
 	}
 }
 
-func (daemon *Daemon) subscribeToContainerStats(c *container.Container) chan interface{} {
+func (daemon *Daemon) subscribeToContainerStats(c *container.Container) chan any {
 	return daemon.statsCollector.Collect(c)
 }
 
-func (daemon *Daemon) unsubscribeToContainerStats(c *container.Container, ch chan interface{}) {
+func (daemon *Daemon) unsubscribeToContainerStats(c *container.Container, ch chan any) {
 	daemon.statsCollector.Unsubscribe(c, ch)
 }
 
 // GetContainerStats collects all the stats published by a container
-func (daemon *Daemon) GetContainerStats(container *container.Container) (*containertypes.StatsResponse, error) {
-	stats, err := daemon.stats(container)
+func (daemon *Daemon) GetContainerStats(ctr *container.Container) (*containertypes.StatsResponse, error) {
+	stats, err := daemon.stats(ctr)
 	if err != nil {
 		goto done
 	}
@@ -114,22 +114,21 @@ func (daemon *Daemon) GetContainerStats(container *container.Container) (*contai
 	}
 
 	// We already have the network stats on Windows directly from HCS.
-	if !container.Config.NetworkDisabled && runtime.GOOS != "windows" {
-		stats.Networks, err = daemon.getNetworkStats(container)
+	if !ctr.Config.NetworkDisabled && runtime.GOOS != "windows" {
+		stats.Networks, err = daemon.getNetworkStats(ctr)
 	}
 
 done:
-	switch err.(type) {
-	case nil:
-		return stats, nil
-	case errdefs.ErrConflict, errdefs.ErrNotFound:
-		// return empty stats containing only name and ID if not running or not found
-		return &containertypes.StatsResponse{
-			Name: container.Name,
-			ID:   container.ID,
-		}, nil
-	default:
-		log.G(context.TODO()).Errorf("collecting stats for container %s: %v", container.Name, err)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) || cerrdefs.IsConflict(err) {
+			// return empty stats containing only name and ID if not running or not found
+			return &containertypes.StatsResponse{
+				Name: ctr.Name,
+				ID:   ctr.ID,
+			}, nil
+		}
+		log.G(context.TODO()).Errorf("collecting stats for container %s: %v", ctr.Name, err)
 		return nil, err
 	}
+	return stats, nil
 }

@@ -13,18 +13,18 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/log/logtest"
 	"github.com/distribution/reference"
-	dockerimages "github.com/docker/docker/daemon/images"
+	dockerimages "github.com/moby/moby/v2/daemon/images"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestLookup(t *testing.T) {
-	ctx := namespaces.WithNamespace(context.TODO(), "testing")
+	ctx := namespaces.WithNamespace(t.Context(), "testing")
 	ctx = logtest.WithT(ctx, t)
 	mdb := newTestDB(ctx, t)
 	service := &ImageService{
@@ -282,7 +282,7 @@ func newTestDB(ctx context.Context, t testing.TB) *metadata.DB {
 	t.Helper()
 
 	p := filepath.Join(t.TempDir(), "metadata")
-	bdb, err := bbolt.Open(p, 0o600, &bbolt.Options{})
+	bdb, err := bolt.Open(p, 0o600, &bolt.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,9 +3,8 @@ package containerd
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
@@ -16,28 +15,33 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
-	"github.com/docker/docker/api/types/events"
-	registrytypes "github.com/docker/docker/api/types/registry"
-	"github.com/docker/docker/distribution"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/internal/metrics"
-	"github.com/docker/docker/pkg/progress"
-	"github.com/docker/docker/pkg/streamformatter"
-	"github.com/docker/docker/pkg/stringid"
+	"github.com/moby/moby/api/pkg/progress"
+	"github.com/moby/moby/api/pkg/streamformatter"
+	"github.com/moby/moby/api/types/events"
+	registrytypes "github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/v2/daemon/internal/distribution"
+	"github.com/moby/moby/v2/daemon/internal/metrics"
+	"github.com/moby/moby/v2/daemon/internal/stringid"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/errdefs"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
 // PullImage initiates a pull operation. baseRef is the image to pull.
 // If reference is not tagged, all tags are pulled.
-func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registrytypes.AuthConfig, outStream io.Writer) (retErr error) {
+func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, options imagebackend.PullOptions) (retErr error) {
+	if len(options.Platforms) > 1 {
+		// TODO(thaJeztah): add support for pulling multiple platforms
+		return cerrdefs.ErrInvalidArgument.WithMessage("multiple platforms is not supported")
+	}
 	start := time.Now()
 	defer func() {
 		if retErr == nil {
 			metrics.ImageActions.WithValues("pull").UpdateSince(start)
 		}
 	}()
-	out := streamformatter.NewJSONProgressOutput(outStream, false)
+	out := streamformatter.NewJSONProgressOutput(options.OutStream, false)
 
 	ctx, done, err := i.withLease(ctx, true)
 	if err != nil {
@@ -45,14 +49,20 @@ func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, p
 	}
 	defer done()
 
+	var platform *ocispec.Platform
+	if len(options.Platforms) > 0 {
+		p := options.Platforms[0]
+		platform = &p
+	}
+
 	if !reference.IsNameOnly(baseRef) {
-		return i.pullTag(ctx, baseRef, platform, metaHeaders, authConfig, out)
+		return i.pullTag(ctx, baseRef, platform, options.MetaHeaders, options.AuthConfig, out)
 	}
 
 	tags, err := distribution.Tags(ctx, baseRef, &distribution.Config{
 		RegistryService: i.registryService,
-		MetaHeaders:     metaHeaders,
-		AuthConfig:      authConfig,
+		MetaHeaders:     options.MetaHeaders,
+		AuthConfig:      options.AuthConfig,
 	})
 	if err != nil {
 		return err
@@ -68,7 +78,7 @@ func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, p
 			continue
 		}
 
-		if err := i.pullTag(ctx, ref, platform, metaHeaders, authConfig, out); err != nil {
+		if err := i.pullTag(ctx, ref, platform, options.MetaHeaders, options.AuthConfig, out); err != nil {
 			return fmt.Errorf("error pulling %s: %w", ref, err)
 		}
 	}
@@ -79,14 +89,14 @@ func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, p
 func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registrytypes.AuthConfig, out progress.Output) error {
 	var opts []containerd.RemoteOpt
 	if platform != nil {
-		opts = append(opts, containerd.WithPlatform(platforms.Format(*platform)))
+		opts = append(opts, containerd.WithPlatform(platforms.FormatAll(*platform)))
 	}
 
-	resolver, _ := i.newResolverFromAuthConfig(ctx, authConfig, ref)
+	resolver, _ := i.newResolverFromAuthConfig(ctx, authConfig, ref, metaHeaders)
 	opts = append(opts, containerd.WithResolver(resolver))
 
 	oldImage, err := i.resolveImage(ctx, ref.String())
-	if err != nil && !errdefs.IsNotFound(err) {
+	if err != nil && !cerrdefs.IsNotFound(err) {
 		return err
 	}
 
@@ -116,10 +126,10 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 		p = platforms.Only(*platform)
 	}
 
-	jobs := newJobs()
+	pullJobs := newJobs()
 	opts = append(opts, containerd.WithImageHandler(c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
 		if showBlobProgress(desc) {
-			jobs.Add(desc)
+			pullJobs.Add(desc)
 		}
 		return nil, nil
 	})))
@@ -129,7 +139,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 		snapshotter: i.snapshotterService(i.snapshotter),
 		showExists:  true,
 	}
-	finishProgress := jobs.showProgress(ctx, out, pp)
+	finishProgress := pullJobs.showProgress(ctx, out, pp)
 
 	defer func() {
 		finishProgress()
@@ -151,23 +161,27 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 		}
 	}()
 
-	var sentPullingFrom, sentSchema1Deprecation bool
+	var sentPullingFrom, sentModelNotSupported atomic.Bool
 	ah := c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		if desc.MediaType == c8dimages.MediaTypeDockerSchema1Manifest && !sentSchema1Deprecation {
-			err := distribution.DeprecatedSchema1ImageError(ref)
-			if os.Getenv("DOCKER_ENABLE_DEPRECATED_PULL_SCHEMA_1_IMAGE") == "" {
-				log.G(context.TODO()).Warn(err.Error())
-				return nil, err
+		if desc.MediaType == c8dimages.MediaTypeDockerSchema1Manifest {
+			return nil, distribution.DeprecatedSchema1ImageError(ref)
+		}
+
+		ociAiArtifactManifest := c8dimages.IsManifestType(desc.MediaType) && isModelMediaType(desc.ArtifactType)
+		aiMediaType := isModelMediaType(desc.MediaType)
+
+		if ociAiArtifactManifest || aiMediaType {
+			if !sentModelNotSupported.Load() {
+				sentModelNotSupported.Store(true)
+				progress.Message(out, "", `WARNING: AI models are not supported by the Engine yet, did you mean to use "docker model pull/run" instead?`)
 			}
-			progress.Message(out, "", err.Error())
-			sentSchema1Deprecation = true
 		}
 		if c8dimages.IsLayerType(desc.MediaType) {
 			id := stringid.TruncateID(desc.Digest.String())
 			progress.Update(out, id, "Pulling fs layer")
 		}
 		if c8dimages.IsManifestType(desc.MediaType) {
-			if !sentPullingFrom {
+			if !sentPullingFrom.Load() {
 				var tagOrDigest string
 				if tagged, ok := ref.(reference.Tagged); ok {
 					tagOrDigest = tagged.Tag()
@@ -175,7 +189,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 					tagOrDigest = ref.String()
 				}
 				progress.Message(out, tagOrDigest, "Pulling from "+reference.Path(ref))
-				sentPullingFrom = true
+				sentPullingFrom.Store(true)
 			}
 
 			available, _, _, missing, err := c8dimages.Check(ctx, i.content, desc, p)
@@ -202,15 +216,11 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 	infoHandler := snapshotters.AppendInfoHandlerWrapper(ref.String())
 	opts = append(opts, containerd.WithImageHandlerWrapper(infoHandler))
 
-	// Allow pulling application/vnd.docker.distribution.manifest.v1+prettyjws images
-	// by converting them to OCI manifests.
-	opts = append(opts, containerd.WithSchema1Conversion) //nolint:staticcheck // Ignore SA1019: containerd.WithSchema1Conversion is deprecated: use Schema 2 or OCI images.
-
 	img, err := i.client.Pull(ctx, ref.String(), opts...)
 	if err != nil {
 		if errors.Is(err, docker.ErrInvalidAuthorization) {
 			// Match error returned by containerd.
-			// https://github.com/containerd/containerd/blob/v1.7.8/remotes/docker/authorizer.go#L189-L191
+			// https://github.com/containerd/containerd/blob/v2.1.1/core/remotes/docker/authorizer.go#L201-L203
 			if strings.Contains(err.Error(), "no basic auth credentials") {
 				return err
 			}
@@ -223,7 +233,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 			if strings.Contains(err.Error(), "platform") {
 				platformStr := platforms.DefaultString()
 				if platform != nil {
-					platformStr = platforms.Format(*platform)
+					platformStr = platforms.FormatAll(*platform)
 				}
 				return errdefs.NotFound(fmt.Errorf("no matching manifest for %s in the manifest list entries: %w", platformStr, err))
 			}
@@ -260,4 +270,8 @@ func writeStatus(out progress.Output, requestedTag string, newerDownloaded bool)
 	} else {
 		progress.Message(out, "", "Status: Image is up to date for "+requestedTag)
 	}
+}
+
+func isModelMediaType(mediaType string) bool {
+	return strings.HasPrefix(strings.ToLower(mediaType), "application/vnd.docker.ai.")
 }

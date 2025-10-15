@@ -1,23 +1,24 @@
 //go:build !windows
 
-package ipvlan // import "github.com/docker/docker/integration/network/ipvlan"
+package ipvlan
 
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	dclient "github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	net "github.com/docker/docker/integration/internal/network"
-	n "github.com/docker/docker/integration/network"
-	"github.com/docker/docker/libnetwork/netlabel"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/moby/moby/api/types/network"
+	dclient "github.com/moby/moby/client"
+	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
+	"github.com/moby/moby/v2/integration/internal/container"
+	net "github.com/moby/moby/v2/integration/internal/network"
+	n "github.com/moby/moby/v2/integration/network"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -91,7 +92,7 @@ func TestDockerNetworkIpvlan(t *testing.T) {
 			name: "L3MultiSubnet",
 			test: testIpvlanL3MultiSubnet,
 		}, {
-			name: "L2Addressing",
+			name: "L2Gateway",
 			test: testIpvlanL2Addressing,
 		}, {
 			name: "L3Addressing",
@@ -269,23 +270,16 @@ func testIpvlanL2MultiSubnet(t *testing.T, ctx context.Context, client dclient.A
 	)
 	c1, err := client.ContainerInspect(ctx, id1)
 	assert.NilError(t, err)
-	if parent == "" {
-		// Inspect the v4 gateway to ensure no default GW was assigned
-		assert.Check(t, is.Equal(c1.NetworkSettings.Networks[netName].Gateway, ""))
-		// Inspect the v6 gateway to ensure no default GW was assigned
-		assert.Check(t, is.Equal(c1.NetworkSettings.Networks[netName].IPv6Gateway, ""))
-	} else {
-		// Inspect the v4 gateway to ensure the proper default GW was assigned
-		assert.Check(t, is.Equal(c1.NetworkSettings.Networks[netName].Gateway, "172.28.200.1"))
-		// Inspect the v6 gateway to ensure the proper default GW was assigned
-		assert.Check(t, is.Equal(c1.NetworkSettings.Networks[netName].IPv6Gateway, "2001:db8:abc8::1"))
-	}
+	// Inspect the v4 gateway to ensure no default GW was assigned
+	assert.Check(t, !c1.NetworkSettings.Networks[netName].Gateway.IsValid())
+	// Inspect the v6 gateway to ensure no default GW was assigned
+	assert.Check(t, !c1.NetworkSettings.Networks[netName].IPv6Gateway.IsValid())
 
 	// verify ipv4 connectivity to the explicit --ip address second to first
-	_, err = container.Exec(ctx, client, id2, []string{"ping", "-c", "1", c1.NetworkSettings.Networks[netName].IPAddress})
+	_, err = container.Exec(ctx, client, id2, []string{"ping", "-c", "1", c1.NetworkSettings.Networks[netName].IPAddress.String()})
 	assert.NilError(t, err)
 	// verify ipv6 connectivity to the explicit --ip6 address second to first
-	_, err = container.Exec(ctx, client, id2, []string{"ping6", "-c", "1", c1.NetworkSettings.Networks[netName].GlobalIPv6Address})
+	_, err = container.Exec(ctx, client, id2, []string{"ping6", "-c", "1", c1.NetworkSettings.Networks[netName].GlobalIPv6Address.String()})
 	assert.NilError(t, err)
 
 	// start dual stack containers and verify the user specified --ip and --ip6 addresses on subnets 172.28.102.0/24 and 2001:db8:abc4::/64
@@ -303,21 +297,21 @@ func testIpvlanL2MultiSubnet(t *testing.T, ctx context.Context, client dclient.A
 	assert.NilError(t, err)
 	if parent == "" {
 		// Inspect the v4 gateway to ensure no default GW was assigned
-		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].Gateway, ""))
+		assert.Check(t, !c3.NetworkSettings.Networks[netName].Gateway.IsValid())
 		// Inspect the v6 gateway to ensure no default GW was assigned
-		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].IPv6Gateway, ""))
+		assert.Check(t, !c3.NetworkSettings.Networks[netName].IPv6Gateway.IsValid())
 	} else {
 		// Inspect the v4 gateway to ensure the proper explicitly assigned default GW was assigned
-		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].Gateway, "172.28.202.254"))
+		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].Gateway, netip.MustParseAddr("172.28.202.254")))
 		// Inspect the v6 gateway to ensure the proper explicitly assigned default GW was assigned
-		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].IPv6Gateway, "2001:db8:abc6::254"))
+		assert.Check(t, is.Equal(c3.NetworkSettings.Networks[netName].IPv6Gateway, netip.MustParseAddr("2001:db8:abc6::254")))
 	}
 
 	// verify ipv4 connectivity to the explicit --ip address from third to fourth
-	_, err = container.Exec(ctx, client, id4, []string{"ping", "-c", "1", c3.NetworkSettings.Networks[netName].IPAddress})
+	_, err = container.Exec(ctx, client, id4, []string{"ping", "-c", "1", c3.NetworkSettings.Networks[netName].IPAddress.String()})
 	assert.NilError(t, err)
 	// verify ipv6 connectivity to the explicit --ip6 address from third to fourth
-	_, err = container.Exec(ctx, client, id4, []string{"ping6", "-c", "1", c3.NetworkSettings.Networks[netName].GlobalIPv6Address})
+	_, err = container.Exec(ctx, client, id4, []string{"ping6", "-c", "1", c3.NetworkSettings.Networks[netName].GlobalIPv6Address.String()})
 	assert.NilError(t, err)
 }
 
@@ -348,10 +342,10 @@ func testIpvlanL3MultiSubnet(t *testing.T, ctx context.Context, client dclient.A
 	assert.NilError(t, err)
 
 	// verify ipv4 connectivity to the explicit --ipv address second to first
-	_, err = container.Exec(ctx, client, id2, []string{"ping", "-c", "1", c1.NetworkSettings.Networks[netName].IPAddress})
+	_, err = container.Exec(ctx, client, id2, []string{"ping", "-c", "1", c1.NetworkSettings.Networks[netName].IPAddress.String()})
 	assert.NilError(t, err)
 	// verify ipv6 connectivity to the explicit --ipv6 address second to first
-	_, err = container.Exec(ctx, client, id2, []string{"ping6", "-c", "1", c1.NetworkSettings.Networks[netName].GlobalIPv6Address})
+	_, err = container.Exec(ctx, client, id2, []string{"ping6", "-c", "1", c1.NetworkSettings.Networks[netName].GlobalIPv6Address.String()})
 	assert.NilError(t, err)
 
 	// start dual stack containers and verify the user specified --ip and --ip6 addresses on subnets 172.28.102.0/24 and 2001:db8:abc4::/64
@@ -369,20 +363,20 @@ func testIpvlanL3MultiSubnet(t *testing.T, ctx context.Context, client dclient.A
 	assert.NilError(t, err)
 
 	// verify ipv4 connectivity to the explicit --ipv address from third to fourth
-	_, err = container.Exec(ctx, client, id4, []string{"ping", "-c", "1", c3.NetworkSettings.Networks[netName].IPAddress})
+	_, err = container.Exec(ctx, client, id4, []string{"ping", "-c", "1", c3.NetworkSettings.Networks[netName].IPAddress.String()})
 	assert.NilError(t, err)
 	// verify ipv6 connectivity to the explicit --ipv6 address from third to fourth
-	_, err = container.Exec(ctx, client, id4, []string{"ping6", "-c", "1", c3.NetworkSettings.Networks[netName].GlobalIPv6Address})
+	_, err = container.Exec(ctx, client, id4, []string{"ping6", "-c", "1", c3.NetworkSettings.Networks[netName].GlobalIPv6Address.String()})
 	assert.NilError(t, err)
 
 	// Inspect the v4 gateway to ensure no next hop is assigned in L3 mode
-	assert.Equal(t, c1.NetworkSettings.Networks[netName].Gateway, "")
+	assert.Check(t, !c1.NetworkSettings.Networks[netName].Gateway.IsValid())
 	// Inspect the v6 gateway to ensure the explicitly specified default GW is ignored per L3 mode enabled
-	assert.Equal(t, c1.NetworkSettings.Networks[netName].IPv6Gateway, "")
+	assert.Check(t, !c1.NetworkSettings.Networks[netName].IPv6Gateway.IsValid())
 	// Inspect the v4 gateway to ensure no next hop is assigned in L3 mode
-	assert.Equal(t, c3.NetworkSettings.Networks[netName].Gateway, "")
+	assert.Check(t, !c3.NetworkSettings.Networks[netName].Gateway.IsValid())
 	// Inspect the v6 gateway to ensure the explicitly specified default GW is ignored per L3 mode enabled
-	assert.Equal(t, c3.NetworkSettings.Networks[netName].IPv6Gateway, "")
+	assert.Check(t, !c3.NetworkSettings.Networks[netName].IPv6Gateway.IsValid())
 }
 
 // Verify ipvlan l2 mode sets the proper default gateway routes via netlink
@@ -404,14 +398,15 @@ func testIpvlanL2Addressing(t *testing.T, ctx context.Context, client dclient.AP
 	id := container.Run(ctx, t, client,
 		container.WithNetworkMode(netNameL2),
 	)
-	// Validate ipvlan l2 mode defaults gateway sets the default IPAM next-hop inferred from the subnet
+	// Check the supplied IPv4 gateway address is used in a default route.
 	result, err := container.Exec(ctx, client, id, []string{"ip", "route"})
 	assert.NilError(t, err)
 	assert.Check(t, is.Contains(result.Combined(), "default via 172.28.140.254 dev eth0"))
-	// Validate ipvlan l2 mode sets the v6 gateway to the user specified default gateway/next-hop
+	// No gateway address was supplied for IPv6, check that no default gateway was set up.
 	result, err = container.Exec(ctx, client, id, []string{"ip", "-6", "route"})
 	assert.NilError(t, err)
-	assert.Check(t, is.Contains(result.Combined(), "default via 2001:db8:abcb::1 dev eth0"))
+	assert.Check(t, !strings.Contains(result.Combined(), "default via"),
+		"result: %s", result.Combined())
 }
 
 // Validate ipvlan l3 mode sets the v4 gateway to dev eth0 and disregards any explicit or inferred next-hops
@@ -485,14 +480,28 @@ func TestIpvlanIPAM(t *testing.T) {
 		},
 	}
 
+	var (
+		subnetv4 = netip.MustParsePrefix("10.42.42.0/24")
+		subnetv6 = netip.MustParsePrefix("2001:db8:abcd::/64")
+	)
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := testutil.StartSpan(ctx, t)
 			c := d.NewClientT(t, dclient.WithVersion(tc.apiVersion))
 
-			netOpts := []func(*network.CreateOptions){
+			netOpts := []func(*dclient.NetworkCreateOptions){
 				net.WithIPvlan("", "l3"),
 				net.WithIPv4(tc.enableIPv4),
+				net.WithIPAMConfig(
+					network.IPAMConfig{
+						Subnet: subnetv4,
+					},
+					network.IPAMConfig{
+						Subnet:  subnetv6,
+						IPRange: netip.MustParsePrefix("2001:db8:abcd::100/120"),
+					},
+				),
 			}
 			if tc.enableIPv6 {
 				netOpts = append(netOpts, net.WithIPv6())
@@ -504,16 +513,21 @@ func TestIpvlanIPAM(t *testing.T) {
 			assert.Check(t, n.IsNetworkAvailable(ctx, c, netName))
 
 			id := container.Run(ctx, t, c, container.WithNetworkMode(netName))
-			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, id, dclient.ContainerRemoveOptions{Force: true})
 
 			loRes := container.ExecT(ctx, t, c, id, []string{"ip", "a", "show", "dev", "lo"})
 			assert.Check(t, is.Contains(loRes.Combined(), " inet "))
 			assert.Check(t, is.Contains(loRes.Combined(), " inet6 "))
 
+			wantSubnetStatus := make(map[netip.Prefix]network.SubnetStatus)
 			eth0Res := container.ExecT(ctx, t, c, id, []string{"ip", "a", "show", "dev", "eth0"})
 			if tc.enableIPv4 || tc.expIPv4 {
 				assert.Check(t, is.Contains(eth0Res.Combined(), " inet "),
 					"Expected IPv4 in: %s", eth0Res.Combined())
+				wantSubnetStatus[subnetv4] = network.SubnetStatus{
+					IPsInUse:            3, // network, broadcast, container
+					DynamicIPsAvailable: 253,
+				}
 			} else {
 				assert.Check(t, !strings.Contains(eth0Res.Combined(), " inet "),
 					"Expected no IPv4 in: %s", eth0Res.Combined())
@@ -521,6 +535,10 @@ func TestIpvlanIPAM(t *testing.T) {
 			if tc.enableIPv6 {
 				assert.Check(t, is.Contains(eth0Res.Combined(), " inet6 "),
 					"Expected IPv6 in: %s", eth0Res.Combined())
+				wantSubnetStatus[subnetv6] = network.SubnetStatus{
+					IPsInUse:            2, // subnet-router anycast, container
+					DynamicIPsAvailable: 255,
+				}
 			} else {
 				assert.Check(t, !strings.Contains(eth0Res.Combined(), " inet6 "),
 					"Expected no IPv6 in: %s", eth0Res.Combined())
@@ -532,8 +550,186 @@ func TestIpvlanIPAM(t *testing.T) {
 				expDisableIPv6 = "0"
 			}
 			assert.Check(t, is.Equal(strings.TrimSpace(sysctlRes.Combined()), expDisableIPv6))
+
+			cc := d.NewClientT(t, dclient.WithVersion("1.52"))
+			inspect, err := cc.NetworkInspect(ctx, netName, dclient.NetworkInspectOptions{})
+			if assert.Check(t, err) && assert.Check(t, inspect.Status != nil) {
+				assert.Check(t, is.DeepEqual(wantSubnetStatus, inspect.Status.IPAM.Subnets, cmpopts.EquateEmpty()))
+			}
+			cc.Close()
+			cc = d.NewClientT(t, dclient.WithVersion("1.51"))
+			inspect, err = cc.NetworkInspect(ctx, netName, dclient.NetworkInspectOptions{})
+			assert.Check(t, err)
+			assert.Check(t, inspect.Status == nil)
+			cc.Close()
 		})
 	}
+}
+
+// IPVLAN networks are allowed to be assigned IPAM subnets that overlap with
+// other IPVLAN networks' IPAM subnets. But no two IPVLAN endpoints may be
+// assigned the same address, even when the endpoints are attached to different
+// networks. The assignment of an address to an endpoint on one network may
+// therefore reduce the number of available addresses to assign to other
+// networks' endpoints.
+func TestIpvlanIPAMOverlap(t *testing.T) {
+	skip.If(t, testEnv.IsRemoteDaemon)
+	skip.If(t, testEnv.IsRootless, "rootless mode has different view of network")
+
+	ctx := testutil.StartSpan(baseContext, t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+
+	c := d.NewClientT(t)
+
+	checkNetworkIPAMState := func(networkID string, want map[netip.Prefix]network.SubnetStatus) bool {
+		t.Helper()
+		nw, err := c.NetworkInspect(ctx, networkID, dclient.NetworkInspectOptions{})
+		if assert.Check(t, err) && assert.Check(t, nw.Status != nil) {
+			return assert.Check(t, is.DeepEqual(want, nw.Status.IPAM.Subnets, cmpopts.EquateEmpty()))
+		}
+		return false
+	}
+
+	// Create three networks with joined and overlapped IPAM ranges
+	// and verify that the IPAM state is correct
+
+	const (
+		netName1 = "ipvlannet1"
+		netName2 = "ipvlannet2"
+		netName3 = "ipvlannet3"
+	)
+	cidrv4 := netip.MustParsePrefix("192.168.0.0/24")
+	cidrv6 := netip.MustParsePrefix("2001:db8:abcd::/64")
+
+	net.CreateNoError(ctx, t, c, netName1,
+		net.WithIPvlan("", "l3"),
+		net.WithIPv6(),
+		net.WithIPAMConfig(
+			network.IPAMConfig{
+				Subnet:  cidrv4,
+				IPRange: netip.MustParsePrefix("192.168.0.0/25"),
+				Gateway: netip.MustParseAddr("192.168.0.1"),
+				AuxAddress: map[string]netip.Addr{
+					"reserved": netip.MustParseAddr("192.168.0.100"),
+				},
+			},
+			network.IPAMConfig{
+				Subnet:  cidrv6,
+				IPRange: netip.MustParsePrefix("2001:db8:abcd::/124"),
+			},
+		),
+	)
+	defer c.NetworkRemove(ctx, netName1)
+	assert.Check(t, n.IsNetworkAvailable(ctx, c, netName1))
+
+	checkNetworkIPAMState(netName1, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            4,
+			DynamicIPsAvailable: 125,
+		},
+		cidrv6: {
+			IPsInUse:            1,
+			DynamicIPsAvailable: 15,
+		},
+	})
+
+	net.CreateNoError(ctx, t, c, netName2,
+		net.WithIPvlan("", "l3"),
+		net.WithIPv6(),
+		net.WithIPAMConfig(
+			network.IPAMConfig{
+				Subnet:  cidrv4,
+				IPRange: netip.MustParsePrefix("192.168.0.0/24"),
+			},
+			network.IPAMConfig{
+				Subnet:  cidrv6,
+				IPRange: netip.MustParsePrefix("2001:db8:abcd::/120"),
+			},
+		),
+	)
+
+	defer c.NetworkRemove(ctx, netName2)
+	assert.Check(t, n.IsNetworkAvailable(ctx, c, netName2))
+
+	checkNetworkIPAMState(netName2, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            4,
+			DynamicIPsAvailable: 252,
+		},
+		cidrv6: {
+			IPsInUse:            1,
+			DynamicIPsAvailable: 255,
+		},
+	})
+
+	net.CreateNoError(ctx, t, c, netName3,
+		net.WithIPvlan("", "l3"),
+		net.WithIPv6(),
+		net.WithIPAMConfig(
+			network.IPAMConfig{
+				Subnet:  cidrv4,
+				IPRange: netip.MustParsePrefix("192.168.0.128/25"),
+			},
+			network.IPAMConfig{
+				Subnet:  cidrv6,
+				IPRange: netip.MustParsePrefix("2001:db8:abcd::80/124"),
+			},
+		),
+	)
+
+	defer c.NetworkRemove(ctx, netName3)
+	assert.Check(t, n.IsNetworkAvailable(ctx, c, netName3))
+
+	checkNetworkIPAMState(netName3, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            4,
+			DynamicIPsAvailable: 127,
+		},
+		cidrv6: {
+			IPsInUse:            1,
+			DynamicIPsAvailable: 16,
+		},
+	})
+
+	// Create a container on one of the networks
+	id := container.Run(ctx, t, c, container.WithNetworkMode(netName1))
+	defer c.ContainerRemove(ctx, id, dclient.ContainerRemoveOptions{Force: true})
+
+	// Verify that the IPAM status of all three networks are affected.
+	checkNetworkIPAMState(netName1, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            5,
+			DynamicIPsAvailable: 124,
+		},
+		cidrv6: {
+			IPsInUse:            2,
+			DynamicIPsAvailable: 14,
+		},
+	})
+
+	checkNetworkIPAMState(netName2, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            5,
+			DynamicIPsAvailable: 251,
+		},
+		cidrv6: {
+			IPsInUse:            2,
+			DynamicIPsAvailable: 254,
+		},
+	})
+
+	checkNetworkIPAMState(netName3, map[netip.Prefix]network.SubnetStatus{
+		cidrv4: {
+			IPsInUse:            5,
+			DynamicIPsAvailable: 127,
+		},
+		cidrv6: {
+			IPsInUse:            2,
+			DynamicIPsAvailable: 16,
+		},
+	})
 }
 
 // TestIPVlanDNS checks whether DNS is forwarded, for combinations of l2/l3 mode,
@@ -591,7 +787,7 @@ func TestIPVlanDNS(t *testing.T) {
 			name := fmt.Sprintf("Mode=%v/HasParent=%v/Internal=%v", mode, tc.parent != "", tc.internal)
 			t.Run(name, func(t *testing.T) {
 				ctx := testutil.StartSpan(ctx, t)
-				createOpts := []func(*network.CreateOptions){
+				createOpts := []func(*dclient.NetworkCreateOptions){
 					net.WithIPvlan(tc.parent, mode),
 				}
 				if tc.internal {
@@ -601,7 +797,7 @@ func TestIPVlanDNS(t *testing.T) {
 				defer c.NetworkRemove(ctx, netName)
 
 				ctrId := container.Run(ctx, t, c, container.WithNetworkMode(netName))
-				defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+				defer c.ContainerRemove(ctx, ctrId, dclient.ContainerRemoveOptions{Force: true})
 				res, err := container.Exec(ctx, c, ctrId, []string{"nslookup", "test.example"})
 				assert.NilError(t, err)
 				if tc.expDNS {
@@ -668,7 +864,7 @@ func TestPointToPoint(t *testing.T) {
 				container.WithNetworkMode(netName),
 				container.WithName(ctrName),
 			)
-			defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+			defer apiClient.ContainerRemove(ctx, id, dclient.ContainerRemoveOptions{Force: true})
 
 			attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -676,7 +872,7 @@ func TestPointToPoint(t *testing.T) {
 				container.WithCmd([]string{"ping", "-c1", "-W3", ctrName}...),
 				container.WithNetworkMode(netName),
 			)
-			defer apiClient.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{Force: true})
+			defer apiClient.ContainerRemove(ctx, res.ContainerID, dclient.ContainerRemoveOptions{Force: true})
 			assert.Check(t, is.Equal(res.ExitCode, 0))
 			assert.Check(t, is.Equal(res.Stderr.Len(), 0))
 			assert.Check(t, is.Contains(res.Stdout.String(), "1 packets transmitted, 1 packets received"))
@@ -707,7 +903,7 @@ func TestEndpointWithCustomIfname(t *testing.T) {
 				netlabel.Ifname: "foobar",
 			},
 		}))
-	defer container.Remove(ctx, t, apiClient, ctrID, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, ctrID, dclient.ContainerRemoveOptions{Force: true})
 
 	out, err := container.Output(ctx, apiClient, ctrID)
 	assert.NilError(t, err)

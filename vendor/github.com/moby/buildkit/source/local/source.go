@@ -19,10 +19,10 @@ import (
 	"github.com/moby/buildkit/source"
 	srctypes "github.com/moby/buildkit/source/types"
 	"github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/cachedigest"
 	"github.com/moby/buildkit/util/progress"
 	"github.com/moby/patternmatcher"
 	"github.com/moby/sys/user"
-	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 	"github.com/tonistiigi/fsutil"
 	fstypes "github.com/tonistiigi/fsutil/types"
@@ -154,7 +154,11 @@ func (ls *localSourceHandler) CacheKey(ctx context.Context, g session.Group, ind
 	if err != nil {
 		return "", "", nil, false, err
 	}
-	return "session:" + ls.src.Name + ":" + digest.FromBytes(dt).String(), digest.FromBytes(dt).String(), nil, true, nil
+	dgst, err := cachedigest.FromBytes(dt, cachedigest.TypeJSON)
+	if err != nil {
+		return "", "", nil, false, err
+	}
+	return "session:" + ls.src.Name + ":" + dgst.String(), dgst.String(), nil, true, nil
 }
 
 func (ls *localSourceHandler) Snapshot(ctx context.Context, g session.Group) (cache.ImmutableRef, error) {
@@ -164,7 +168,7 @@ func (ls *localSourceHandler) Snapshot(ctx context.Context, g session.Group) (ca
 	}
 
 	timeoutCtx, cancel := context.WithCancelCause(ctx)
-	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 5*time.Second, errors.WithStack(context.DeadlineExceeded))
+	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 5*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet
 	defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 	caller, err := ls.sm.Get(timeoutCtx, sessionID, false)

@@ -1,41 +1,38 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/network"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestNetworksPruneError(t *testing.T) {
-	client := &Client{
-		client:  newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-		version: "1.25",
-	}
+	client, err := NewClientWithOpts(
+		WithMockClient(errorMock(http.StatusInternalServerError, "Server error")),
+	)
+	assert.NilError(t, err)
 
-	_, err := client.NetworksPrune(context.Background(), filters.NewArgs())
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	_, err = client.NetworksPrune(context.Background(), nil)
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestNetworksPrune(t *testing.T) {
-	const expectedURL = "/v1.25/networks/prune"
+	const expectedURL = "/networks/prune"
 
 	listCases := []struct {
-		filters             filters.Args
+		filters             Filters
 		expectedQueryParams map[string]string
 	}{
 		{
-			filters: filters.Args{},
+			filters: Filters{},
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -43,7 +40,7 @@ func TestNetworksPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(filters.Arg("dangling", "true")),
+			filters: make(Filters).Add("dangling", "true"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -51,7 +48,7 @@ func TestNetworksPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(filters.Arg("dangling", "false")),
+			filters: make(Filters).Add("dangling", "false"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -59,11 +56,10 @@ func TestNetworksPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(
-				filters.Arg("dangling", "true"),
-				filters.Arg("label", "label1=foo"),
-				filters.Arg("label", "label2!=bar"),
-			),
+			filters: make(Filters).
+				Add("dangling", "true").
+				Add("label", "label1=foo").
+				Add("label", "label2!=bar"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -72,10 +68,10 @@ func TestNetworksPrune(t *testing.T) {
 		},
 	}
 	for _, listCase := range listCases {
-		client := &Client{
-			client: newMockClient(func(req *http.Request) (*http.Response, error) {
-				if !strings.HasPrefix(req.URL.Path, expectedURL) {
-					return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
+		client, err := NewClientWithOpts(
+			WithMockClient(func(req *http.Request) (*http.Response, error) {
+				if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+					return nil, err
 				}
 				query := req.URL.Query()
 				for key, expected := range listCase.expectedQueryParams {
@@ -93,11 +89,11 @@ func TestNetworksPrune(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader(content)),
 				}, nil
 			}),
-			version: "1.25",
-		}
+		)
+		assert.NilError(t, err)
 
 		report, err := client.NetworksPrune(context.Background(), listCase.filters)
-		assert.Check(t, err)
+		assert.NilError(t, err)
 		assert.Check(t, is.Len(report.NetworksDeleted, 2))
 	}
 }

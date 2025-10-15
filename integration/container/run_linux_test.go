@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"bytes"
@@ -9,14 +9,16 @@ import (
 	"strings"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/versions"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	net "github.com/docker/docker/integration/internal/network"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/go-units"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	net "github.com/moby/moby/v2/integration/internal/network"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"golang.org/x/sys/unix"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -186,7 +188,7 @@ func TestRunConsoleSize(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -231,7 +233,7 @@ func TestRunWithAlternativeContainerdShim(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -251,7 +253,7 @@ func TestRunWithAlternativeContainerdShim(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err = apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err = apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -283,7 +285,7 @@ func TestMacAddressIsAppliedToMainNetworkWithShortID(t *testing.T) {
 		container.WithStopSignal("SIGKILL"),
 		container.WithNetworkMode(n[:10]),
 		container.WithContainerWideMacAddress("02:42:08:26:a9:55"))
-	defer container.Remove(ctx, t, apiClient, cid, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, cid, client.ContainerRemoveOptions{Force: true})
 
 	c := container.Inspect(ctx, t, apiClient, cid)
 	assert.Equal(t, c.NetworkSettings.Networks["testnet"].MacAddress, "02:42:08:26:a9:55")
@@ -315,7 +317,7 @@ func TestStaticIPOutsideSubpool(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -345,7 +347,7 @@ func TestWorkingDirNormalization(t *testing.T) {
 				container.WithWorkingDir(tc.workdir),
 			)
 
-			defer container.Remove(ctx, t, apiClient, cID, containertypes.RemoveOptions{Force: true})
+			defer container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{Force: true})
 
 			inspect := container.Inspect(ctx, t, apiClient, cID)
 
@@ -457,14 +459,14 @@ func TestCgroupRW(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			config := container.NewTestConfig(tc.ops...)
-			resp, err := container.CreateFromConfig(ctx, apiClient, config)
+			cfg := container.NewTestConfig(tc.ops...)
+			resp, err := container.CreateFromConfig(ctx, apiClient, cfg)
 			if err != nil {
 				assert.Equal(t, tc.expectedErrMsg, err.Error())
 				return
 			}
 			// TODO check if ro or not
-			err = apiClient.ContainerStart(ctx, resp.ID, containertypes.StartOptions{})
+			err = apiClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 			assert.NilError(t, err)
 
 			res, err := container.Exec(ctx, apiClient, resp.ID, []string{"sh", "-ec", `
@@ -485,6 +487,82 @@ func TestCgroupRW(t *testing.T) {
 			}
 			assert.Equal(t, res.Stdout(), "")
 			assert.Equal(t, tc.expectedExitCode, res.ExitCode)
+		})
+	}
+}
+
+func TestContainerShmSize(t *testing.T) {
+	ctx := setupTest(t)
+
+	const defaultSize = "1000k"
+	defaultSizeBytes, err := units.RAMInBytes(defaultSize)
+	assert.NilError(t, err)
+
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t, "--default-shm-size="+defaultSize)
+	defer d.Stop(t)
+
+	apiClient := d.NewClientT(t)
+
+	tests := []struct {
+		doc     string
+		opt     container.ConfigOpt
+		expSize string
+		expErr  string
+	}{
+		{
+			doc:     "nil hostConfig",
+			opt:     container.WithHostConfig(nil),
+			expSize: defaultSize,
+		},
+		{
+			doc:     "empty hostConfig",
+			opt:     container.WithHostConfig(&containertypes.HostConfig{}),
+			expSize: defaultSize,
+		},
+		{
+			doc:     "custom shmSize",
+			opt:     container.WithHostConfig(&containertypes.HostConfig{ShmSize: defaultSizeBytes * 2}),
+			expSize: "2000k",
+		},
+		{
+			doc:    "negative shmSize",
+			opt:    container.WithHostConfig(&containertypes.HostConfig{ShmSize: -1}),
+			expErr: "Error response from daemon: SHM size can not be less than 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.doc, func(t *testing.T) {
+			if tc.expErr != "" {
+				cfg := container.NewTestConfig(container.WithCmd("sh", "-c", "grep /dev/shm /proc/self/mountinfo"), tc.opt)
+				_, err := container.CreateFromConfig(ctx, apiClient, cfg)
+				assert.Check(t, is.ErrorContains(err, tc.expErr))
+				assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
+				return
+			}
+
+			cID := container.Run(ctx, t, apiClient,
+				container.WithCmd("sh", "-c", "grep /dev/shm /proc/self/mountinfo"),
+				tc.opt,
+			)
+
+			t.Cleanup(func() {
+				container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{})
+			})
+
+			expectedSize, err := units.RAMInBytes(tc.expSize)
+			assert.NilError(t, err)
+
+			ctr := container.Inspect(ctx, t, apiClient, cID)
+			assert.Check(t, is.Equal(ctr.HostConfig.ShmSize, expectedSize))
+
+			out, err := container.Output(ctx, apiClient, cID)
+			assert.NilError(t, err)
+
+			// e.g., "218 213 0:87 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=1000k"
+			assert.Assert(t, is.Contains(out.Stdout, "/dev/shm "), "shm mount not found in output: \n%v", out.Stdout)
+			assert.Check(t, is.Contains(out.Stdout, "size="+tc.expSize))
 		})
 	}
 }

@@ -1,4 +1,4 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
@@ -7,29 +7,29 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestContainerExecCreateError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := NewClientWithOpts(
+		WithMockClient(errorMock(http.StatusInternalServerError, "Server error")),
+	)
+	assert.NilError(t, err)
 
-	_, err := client.ContainerExecCreate(context.Background(), "container_id", container.ExecOptions{})
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	_, err = client.ContainerExecCreate(context.Background(), "container_id", ExecCreateOptions{})
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 
-	_, err = client.ContainerExecCreate(context.Background(), "", container.ExecOptions{})
-	assert.Check(t, is.ErrorType(err, errdefs.IsInvalidParameter))
+	_, err = client.ContainerExecCreate(context.Background(), "", ExecCreateOptions{})
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 
-	_, err = client.ContainerExecCreate(context.Background(), "    ", container.ExecOptions{})
-	assert.Check(t, is.ErrorType(err, errdefs.IsInvalidParameter))
+	_, err = client.ContainerExecCreate(context.Background(), "    ", ExecCreateOptions{})
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 }
 
@@ -41,25 +41,22 @@ func TestContainerExecCreateConnectionError(t *testing.T) {
 	client, err := NewClientWithOpts(WithAPIVersionNegotiation(), WithHost("tcp://no-such-host.invalid"))
 	assert.NilError(t, err)
 
-	_, err = client.ContainerExecCreate(context.Background(), "container_id", container.ExecOptions{})
+	_, err = client.ContainerExecCreate(context.Background(), "container_id", ExecCreateOptions{})
 	assert.Check(t, is.ErrorType(err, IsErrConnectionFailed))
 }
 
 func TestContainerExecCreate(t *testing.T) {
-	expectedURL := "/containers/container_id/exec"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			if req.Method != http.MethodPost {
-				return nil, fmt.Errorf("expected POST method, got %s", req.Method)
+	const expectedURL = "/containers/container_id/exec"
+	client, err := NewClientWithOpts(
+		WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+				return nil, err
 			}
 			// FIXME validate the content is the given ExecConfig ?
 			if err := req.ParseForm(); err != nil {
 				return nil, err
 			}
-			execConfig := &container.ExecOptions{}
+			execConfig := &container.ExecCreateRequest{}
 			if err := json.NewDecoder(req.Body).Decode(execConfig); err != nil {
 				return nil, err
 			}
@@ -77,43 +74,42 @@ func TestContainerExecCreate(t *testing.T) {
 				Body:       io.NopCloser(bytes.NewReader(b)),
 			}, nil
 		}),
-	}
+	)
+	assert.NilError(t, err)
 
-	r, err := client.ContainerExecCreate(context.Background(), "container_id", container.ExecOptions{
+	r, err := client.ContainerExecCreate(context.Background(), "container_id", ExecCreateOptions{
 		User: "user",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.ID != "exec_id" {
-		t.Fatalf("expected `exec_id`, got %s", r.ID)
-	}
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(r.ID, "exec_id"))
 }
 
 func TestContainerExecStartError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
-	err := client.ContainerExecStart(context.Background(), "nothing", container.ExecStartOptions{})
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	client, err := NewClientWithOpts(
+		WithMockClient(errorMock(http.StatusInternalServerError, "Server error")),
+	)
+	assert.NilError(t, err)
+
+	err = client.ContainerExecStart(context.Background(), "nothing", ExecStartOptions{})
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestContainerExecStart(t *testing.T) {
-	expectedURL := "/exec/exec_id/start"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
+	const expectedURL = "/exec/exec_id/start"
+	client, err := NewClientWithOpts(
+		WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+				return nil, err
 			}
 			if err := req.ParseForm(); err != nil {
 				return nil, err
 			}
-			options := &container.ExecStartOptions{}
-			if err := json.NewDecoder(req.Body).Decode(options); err != nil {
+			request := &container.ExecStartRequest{}
+			if err := json.NewDecoder(req.Body).Decode(request); err != nil {
 				return nil, err
 			}
-			if options.Tty || !options.Detach {
-				return nil, fmt.Errorf("expected ExecStartOptions{Detach:true,Tty:false}, got %v", options)
+			if request.Tty || !request.Detach {
+				return nil, fmt.Errorf("expected ExecStartOptions{Detach:true,Tty:false}, got %v", request)
 			}
 
 			return &http.Response{
@@ -121,34 +117,35 @@ func TestContainerExecStart(t *testing.T) {
 				Body:       io.NopCloser(bytes.NewReader([]byte(""))),
 			}, nil
 		}),
-	}
+	)
+	assert.NilError(t, err)
 
-	err := client.ContainerExecStart(context.Background(), "exec_id", container.ExecStartOptions{
+	err = client.ContainerExecStart(context.Background(), "exec_id", ExecStartOptions{
 		Detach: true,
 		Tty:    false,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	assert.NilError(t, err)
 }
 
 func TestContainerExecInspectError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
-	_, err := client.ContainerExecInspect(context.Background(), "nothing")
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	client, err := NewClientWithOpts(
+		WithMockClient(errorMock(http.StatusInternalServerError, "Server error")),
+	)
+	assert.NilError(t, err)
+
+	_, err = client.ContainerExecInspect(context.Background(), "nothing")
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestContainerExecInspect(t *testing.T) {
-	expectedURL := "/exec/exec_id/json"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
+	const expectedURL = "/exec/exec_id/json"
+	client, err := NewClientWithOpts(
+		WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+				return nil, err
 			}
-			b, err := json.Marshal(container.ExecInspect{
-				ExecID:      "exec_id",
+			b, err := json.Marshal(container.ExecInspectResponse{
+				ID:          "exec_id",
 				ContainerID: "container_id",
 			})
 			if err != nil {
@@ -159,16 +156,11 @@ func TestContainerExecInspect(t *testing.T) {
 				Body:       io.NopCloser(bytes.NewReader(b)),
 			}, nil
 		}),
-	}
+	)
+	assert.NilError(t, err)
 
 	inspect, err := client.ContainerExecInspect(context.Background(), "exec_id")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inspect.ExecID != "exec_id" {
-		t.Fatalf("expected ExecID to be `exec_id`, got %s", inspect.ExecID)
-	}
-	if inspect.ContainerID != "container_id" {
-		t.Fatalf("expected ContainerID `container_id`, got %s", inspect.ContainerID)
-	}
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(inspect.ExecID, "exec_id"))
+	assert.Check(t, is.Equal(inspect.ContainerID, "container_id"))
 }

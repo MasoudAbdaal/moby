@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"encoding/json"
@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/integration/internal/container"
-	req "github.com/docker/docker/testutil/request"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/common"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/build"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
+	req "github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -31,14 +33,14 @@ func TestExecWithCloseStdin(t *testing.T) {
 	cID := container.Run(ctx, t, apiClient)
 
 	const expected = "closeIO"
-	execResp, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
+	execResp, err := apiClient.ContainerExecCreate(ctx, cID, client.ExecCreateOptions{
 		AttachStdin:  true,
 		AttachStdout: true,
 		Cmd:          []string{"sh", "-c", "cat && echo " + expected},
 	})
 	assert.NilError(t, err)
 
-	resp, err := apiClient.ContainerExecAttach(ctx, execResp.ID, containertypes.ExecAttachOptions{})
+	resp, err := apiClient.ContainerExecAttach(ctx, execResp.ID, client.ExecAttachOptions{})
 	assert.NilError(t, err)
 	defer resp.Close()
 
@@ -86,7 +88,7 @@ func TestExec(t *testing.T) {
 
 	cID := container.Run(ctx, t, apiClient, container.WithTty(true), container.WithWorkingDir("/root"))
 
-	id, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
+	id, err := apiClient.ContainerExecCreate(ctx, cID, client.ExecCreateOptions{
 		WorkingDir:   "/tmp",
 		Env:          []string{"FOO=BAR"},
 		AttachStdout: true,
@@ -98,7 +100,7 @@ func TestExec(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Check(t, is.Equal(inspect.ExecID, id.ID))
 
-	resp, err := apiClient.ContainerExecAttach(ctx, id.ID, containertypes.ExecAttachOptions{})
+	resp, err := apiClient.ContainerExecAttach(ctx, id.ID, client.ExecAttachOptions{})
 	assert.NilError(t, err)
 	defer resp.Close()
 	r, err := io.ReadAll(resp.Reader)
@@ -118,29 +120,35 @@ func TestExecResize(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	cID := container.Run(ctx, t, apiClient, container.WithTty(true))
-	defer container.Remove(ctx, t, apiClient, cID, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{Force: true})
 
 	cmd := []string{"top"}
 	if runtime.GOOS == "windows" {
 		cmd = []string{"sleep", "240"}
 	}
-	resp, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
-		Tty:    true, // Windows requires a TTY for the resize to work, otherwise fails with "is not a tty: failed precondition", see https://github.com/moby/moby/pull/48665#issuecomment-2412530345
-		Detach: true,
-		Cmd:    cmd,
+	resp, err := apiClient.ContainerExecCreate(ctx, cID, client.ExecCreateOptions{
+		Tty: true, // Windows requires a TTY for the resize to work, otherwise fails with "is not a tty: failed precondition", see https://github.com/moby/moby/pull/48665#issuecomment-2412530345
+		Cmd: cmd,
 	})
 	assert.NilError(t, err)
 	execID := resp.ID
 	assert.NilError(t, err)
-	err = apiClient.ContainerExecStart(ctx, execID, containertypes.ExecStartOptions{Detach: true})
+	err = apiClient.ContainerExecStart(ctx, execID, client.ExecStartOptions{Detach: true})
 	assert.NilError(t, err)
 
 	t.Run("success", func(t *testing.T) {
-		err := apiClient.ContainerExecResize(ctx, execID, containertypes.ResizeOptions{
+		err := apiClient.ContainerExecResize(ctx, execID, client.ContainerResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
+		if runtime.GOOS == "windows" && err != nil {
+			// FIXME(thaJeztah): temporarily allowing test to fail on Windows: see https://github.com/moby/moby/issues/50402
+			t.Log("XFAIL:", err)
+			t.Skip("XFAIL: flaky test on Windows: see https://github.com/moby/moby/issues/50402")
+			return
+		}
 		assert.NilError(t, err)
+
 		// TODO(thaJeztah): also check if the resize happened
 		//
 		// Note: container inspect shows the initial size that was
@@ -229,7 +237,7 @@ func TestExecResize(t *testing.T) {
 				assert.NilError(t, err)
 				assert.Check(t, is.Equal(http.StatusBadRequest, res.StatusCode))
 
-				var errorResponse types.ErrorResponse
+				var errorResponse common.ErrorResponse
 				err = json.NewDecoder(res.Body).Decode(&errorResponse)
 				assert.NilError(t, err)
 				assert.Check(t, is.ErrorContains(errorResponse, tc.expErr))
@@ -238,11 +246,11 @@ func TestExecResize(t *testing.T) {
 	})
 
 	t.Run("unknown execID", func(t *testing.T) {
-		err = apiClient.ContainerExecResize(ctx, "no-such-exec-id", containertypes.ResizeOptions{
+		err = apiClient.ContainerExecResize(ctx, "no-such-exec-id", client.ContainerResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
-		assert.Check(t, is.ErrorType(err, errdefs.IsNotFound))
+		assert.Check(t, is.ErrorType(err, cerrdefs.IsNotFound))
 		assert.Check(t, is.ErrorContains(err, "No such exec instance: no-such-exec-id"))
 	})
 
@@ -266,11 +274,11 @@ func TestExecResize(t *testing.T) {
 		err := apiClient.ContainerKill(ctx, cID, "SIGKILL")
 		assert.NilError(t, err)
 
-		err = apiClient.ContainerExecResize(ctx, execID, containertypes.ResizeOptions{
+		err = apiClient.ContainerExecResize(ctx, execID, client.ContainerResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
-		assert.Check(t, is.ErrorType(err, errdefs.IsConflict))
+		assert.Check(t, is.ErrorType(err, cerrdefs.IsConflict))
 		assert.Check(t, is.ErrorContains(err, "is not running"))
 	})
 }
@@ -280,12 +288,128 @@ func TestExecUser(t *testing.T) {
 	ctx := setupTest(t)
 	apiClient := testEnv.APIClient()
 
-	cID := container.Run(ctx, t, apiClient, container.WithTty(true), container.WithUser("1:1"))
+	ctrOpts := []func(*container.TestContainerConfig){
+		container.WithTty(true),
+		container.WithUser("1:1"),
+	}
+	withoutEtcGroups := container.WithImage(build.Do(ctx, t, apiClient, fakecontext.New(t, "", fakecontext.WithDockerfile("FROM busybox\nRUN rm /etc/group"))))
+	withoutEtcPasswd := container.WithImage(build.Do(ctx, t, apiClient, fakecontext.New(t, "", fakecontext.WithDockerfile("FROM busybox\nRUN rm /etc/passwd"))))
 
-	result, err := container.Exec(ctx, apiClient, cID, []string{"id"})
-	assert.NilError(t, err)
+	withUser := func(user string) func(options *client.ExecCreateOptions) {
+		return func(options *client.ExecCreateOptions) { options.User = user }
+	}
 
-	assert.Check(t, is.Contains(result.Stdout(), "uid=1(daemon) gid=1(daemon)"), "exec command not running as uid/gid 1")
+	tests := []struct {
+		doc         string
+		user        string
+		ctrOpts     []func(*container.TestContainerConfig)
+		expectedErr string
+		expectedOut string
+	}{
+		{
+			doc:         "default user",
+			expectedOut: "uid=1(daemon) gid=1(daemon)",
+		},
+		{
+			doc:         "uid",
+			user:        "0",
+			expectedOut: "uid=0(root) gid=0(root) groups=0(root)",
+		},
+		{
+			doc:         "uid gid",
+			user:        "0:0",
+			expectedOut: "uid=0(root) gid=0(root) groups=0(root)",
+		},
+		{
+			doc:         "username groupname",
+			user:        "root:root",
+			expectedOut: "uid=0(root) gid=0(root) groups=0(root)",
+		},
+		{
+			doc:         "unknown user",
+			user:        "no-such-user",
+			expectedErr: `Error response from daemon: unable to find user no-such-user: no matching entries in passwd file`,
+		},
+		{
+			doc:         "unknown user with gid",
+			user:        "no-such-user:1",
+			expectedErr: `Error response from daemon: unable to find user no-such-user: no matching entries in passwd file`,
+		},
+		{
+			doc:         "unknown group",
+			user:        "1:no-such-group",
+			expectedErr: `Error response from daemon: unable to find group no-such-group: no matching entries in group file`,
+		},
+		{
+			doc:     "missing etc/group",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcGroups},
+		},
+		{
+			doc:     "uid:gid and missing etc/group",
+			user:    "0:0",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcGroups},
+		},
+		{
+			doc:     "user and missing etc/group",
+			user:    "root",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcGroups},
+		},
+		{
+			doc:         "user:gid and missing etc/group",
+			user:        "root;0",
+			ctrOpts:     []func(*container.TestContainerConfig){withoutEtcGroups},
+			expectedErr: `Error response from daemon: unable to find user root;0: no matching entries in passwd file`,
+		},
+		{
+			doc:         "group and missing etc/group",
+			user:        "0:root",
+			ctrOpts:     []func(*container.TestContainerConfig){withoutEtcGroups},
+			expectedErr: `Error response from daemon: unable to find group root: no matching entries in group file`,
+		},
+		{
+			doc:     "missing etc/passwd",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcPasswd},
+		},
+		{
+			doc:     "uid:gid and missing etc/passwd",
+			user:    "0:0",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcPasswd},
+		},
+		{
+			doc:         "user and missing etc/passwd",
+			user:        "root",
+			ctrOpts:     []func(*container.TestContainerConfig){withoutEtcPasswd},
+			expectedErr: `Error response from daemon: unable to find user root: no matching entries in passwd file`,
+		},
+		{
+			doc:         "user:gid and missing etc/passwd",
+			user:        "root;0",
+			ctrOpts:     []func(*container.TestContainerConfig){withoutEtcPasswd},
+			expectedErr: `Error response from daemon: unable to find user root;0: no matching entries in passwd file`,
+		},
+		{
+			doc:     "group and missing etc/passwd",
+			user:    "0:root",
+			ctrOpts: []func(*container.TestContainerConfig){withoutEtcPasswd},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.doc, func(t *testing.T) {
+			cID := container.Run(ctx, t, apiClient, append(ctrOpts, tc.ctrOpts...)...)
+			result, err := container.Exec(ctx, apiClient, cID, []string{"id"}, withUser(tc.user))
+			if tc.expectedErr != "" {
+				assert.Check(t, is.Error(err, tc.expectedErr))
+				assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
+				assert.Check(t, is.Equal(result.Stdout(), "<nil>"))
+				assert.Check(t, is.Equal(result.Stderr(), "<nil>"))
+			} else {
+				assert.Check(t, err)
+				assert.Check(t, is.Contains(result.Stdout(), tc.expectedOut))
+				assert.Check(t, is.Equal(result.Stderr(), ""))
+			}
+		})
+	}
 }
 
 // Test that additional groups set with `--group-add` are kept on exec when the container

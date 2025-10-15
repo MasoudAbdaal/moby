@@ -1,4 +1,4 @@
-package daemon // import "github.com/docker/docker/integration/daemon"
+package daemon
 
 import (
 	"context"
@@ -7,11 +7,14 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/internal/nlwrap"
-	"github.com/docker/docker/internal/testutils/networking"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/moby/moby/api/types/network"
+	swarmtypes "github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/daemon/libnetwork/nlwrap"
+	"github.com/moby/moby/v2/integration/internal/testutils/networking"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -56,8 +59,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--default-address-pool", `base=fdd1:8161:2d2c::/56,size=64`,
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", Gateway: "192.168.176.1"},
-				{Subnet: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::1"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.1")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::1")},
 			},
 		},
 		{
@@ -67,8 +70,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fdd1:8161:2d2c::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", IPRange: "192.168.176.0/24"},
-				{Subnet: "fdd1:8161:2d2c::/64", IPRange: "fdd1:8161:2d2c::/64"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), IPRange: netip.MustParsePrefix("192.168.176.0/24")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c::/64")},
 			},
 		},
 		{
@@ -78,16 +81,16 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--bip6", "fdd1:8161:2d2c::8888/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::8888")},
 			},
 		},
 		{
 			name:               "existing bridge address only",
 			initialBridgeAddrs: []string{"192.168.176.88/24", "fdd1:8161:2d2c::8888/64"},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::8888")},
 			},
 		},
 		{
@@ -109,8 +112,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 			// and it'd be a breaking change for anyone relying on the existing
 			// behaviour.
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c::/56", IPRange: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/56"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::8888")},
 			},
 		},
 		{
@@ -120,8 +123,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fe80::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", IPRange: "192.168.176.0/24"},
-				{Subnet: "fe80::/64", IPRange: "fe80::/64", Gateway: llGwPlaceholder},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), IPRange: netip.MustParsePrefix("192.168.176.0/24")},
+				{Subnet: netip.MustParsePrefix("fe80::/64"), IPRange: netip.MustParsePrefix("fe80::/64"), Gateway: llGwPlaceholder},
 			},
 		},
 		{
@@ -132,8 +135,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fe80:1234::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fe80:1234::/56", IPRange: "fe80:1234::/64", Gateway: "fe80:1234::88"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fe80:1234::/56"), IPRange: netip.MustParsePrefix("fe80:1234::/64"), Gateway: netip.MustParseAddr("fe80:1234::88")},
 			},
 		},
 		{
@@ -144,8 +147,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fdd1:8161:2d2c::/64", "--bip6", "fdd1:8161:2d2c::9999/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", IPRange: "192.168.176.0/24", Gateway: "192.168.176.99"},
-				{Subnet: "fdd1:8161:2d2c::/64", IPRange: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::9999"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.99")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::9999")},
 			},
 		},
 		{
@@ -156,8 +159,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fdd1:8161:2d2c::/56",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/20", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c::/56", IPRange: "fdd1:8161:2d2c::/56", Gateway: "fdd1:8161:2d2c::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/20"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/56"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c::/56"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::8888")},
 			},
 		},
 		{
@@ -170,8 +173,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 			// The bridge's address/subnet should be ignored, this is a change
 			// of fixed-cidr.
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.177.0/24", IPRange: "192.168.177.0/24"},
-				{Subnet: "fdd1:8161:2d2c:1::/64", IPRange: "fdd1:8161:2d2c:1::/64"},
+				{Subnet: netip.MustParsePrefix("192.168.177.0/24"), IPRange: netip.MustParsePrefix("192.168.177.0/24")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c:1::/64"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c:1::/64")},
 				// No Gateway is configured, because the address could not be learnt from the
 				// bridge. An address will have been allocated but, because there's config (the
 				// fixed-cidr), inspect shows just the config. (Surprisingly, when there's no
@@ -189,8 +192,8 @@ func TestDaemonDefaultBridgeIPAM_Docker0(t *testing.T) {
 				"--fixed-cidr-v6", "fdd1:8161:2d2c:1::/64", "--bip6", "fdd1:8161:2d2c:1::9999/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.177.0/24", IPRange: "192.168.177.0/24", Gateway: "192.168.177.99"},
-				{Subnet: "fdd1:8161:2d2c:1::/64", IPRange: "fdd1:8161:2d2c:1::/64", Gateway: "fdd1:8161:2d2c:1::9999"},
+				{Subnet: netip.MustParsePrefix("192.168.177.0/24"), IPRange: netip.MustParsePrefix("192.168.177.0/24"), Gateway: netip.MustParseAddr("192.168.177.99")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c:1::/64"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c:1::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c:1::9999")},
 			},
 		},
 	}
@@ -211,8 +214,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			name:               "bridge only",
 			initialBridgeAddrs: []string{"192.168.176.88/20", "fdd1:8161:2d2c::8888/64"},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c::/64", Gateway: "fdd1:8161:2d2c::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c::8888")},
 			},
 		},
 		{
@@ -222,8 +225,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 				"--fixed-cidr-v6", "fdd1:8161:2d2c::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/24", IPRange: "192.168.176.0/24"},
-				{Subnet: "fdd1:8161:2d2c::/64", IPRange: "fdd1:8161:2d2c::/64"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/24"), IPRange: netip.MustParsePrefix("192.168.176.0/24")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c::/64"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c::/64")},
 			},
 		},
 		{
@@ -238,8 +241,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			},
 			// Selected bip should be the one within fixed-cidr
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c:10::/60", IPRange: "fdd1:8161:2d2c:10::/64", Gateway: "fdd1:8161:2d2c:10::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c:10::/60"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c:10::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c:10::8888")},
 			},
 		},
 		{
@@ -254,8 +257,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			},
 			// Selected bridge subnet should be the one that encompasses fixed-cidr.
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.177.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fdd1:8161:2d2c:10::/60", IPRange: "fdd1:8161:2d2c:11::/64", Gateway: "fdd1:8161:2d2c:10::8888"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.177.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fdd1:8161:2d2c:10::/60"), IPRange: netip.MustParsePrefix("fdd1:8161:2d2c:11::/64"), Gateway: netip.MustParseAddr("fdd1:8161:2d2c:10::8888")},
 			},
 		},
 		{
@@ -266,8 +269,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 				"--fixed-cidr-v6", "fe80::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fe80::/64", IPRange: "fe80::/64", Gateway: llGwPlaceholder},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fe80::/64"), IPRange: netip.MustParsePrefix("fe80::/64"), Gateway: llGwPlaceholder},
 			},
 		},
 		{
@@ -278,8 +281,8 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 				"--fixed-cidr-v6", "fe80:1234::/64",
 			},
 			expIPAMConfig: []network.IPAMConfig{
-				{Subnet: "192.168.176.0/20", IPRange: "192.168.176.0/24", Gateway: "192.168.176.88"},
-				{Subnet: "fe80:1234::/56", IPRange: "fe80:1234::/64", Gateway: "fe80:1234::88"},
+				{Subnet: netip.MustParsePrefix("192.168.176.0/20"), IPRange: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")},
+				{Subnet: netip.MustParsePrefix("fe80:1234::/56"), IPRange: netip.MustParsePrefix("fe80:1234::/64"), Gateway: netip.MustParseAddr("fe80:1234::88")},
 			},
 		},
 		{
@@ -293,7 +296,7 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			// would normally result in a docker network that allocated addresses
 			// within the selected subnet. So, fixed-cidr is dropped, making the
 			// whole subnet allocatable.
-			expIPAMConfig: []network.IPAMConfig{{Subnet: "192.168.176.0/24", Gateway: "192.168.176.88"}},
+			expIPAMConfig: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.168.176.0/24"), Gateway: netip.MustParseAddr("192.168.176.88")}},
 		},
 		{
 			name:               "no bridge ip within fixed-cidr",
@@ -306,7 +309,7 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			// would normally result in a docker network that allocated addresses
 			// within the selected subnet. So, fixed-cidr is dropped, making the
 			// whole subnet allocatable.
-			expIPAMConfig: []network.IPAMConfig{{Subnet: "192.168.160.0/20", Gateway: "192.168.160.88"}},
+			expIPAMConfig: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.168.160.0/20"), Gateway: netip.MustParseAddr("192.168.160.88")}},
 		},
 		{
 			name:               "fixed-cidr contains bridge subnet",
@@ -320,7 +323,7 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 			// within the selected subnet. So, fixed-cidr is dropped, making the
 			// whole subnet allocatable.
 			ipv4Only:      true,
-			expIPAMConfig: []network.IPAMConfig{{Subnet: "192.168.177.0/24", Gateway: "192.168.177.1"}},
+			expIPAMConfig: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.168.177.0/24"), Gateway: netip.MustParseAddr("192.168.177.1")}},
 		},
 
 		{
@@ -362,7 +365,7 @@ func TestDaemonDefaultBridgeIPAM_UserBr(t *testing.T) {
 // llGwPlaceholder can be used as a value for "Gateway" in expected IPAM config,
 // before comparison with actual results it'll be replaced by the kernel assigned
 // link local IPv6 address for the bridge.
-const llGwPlaceholder = "ll-gateway-placeholder"
+var llGwPlaceholder = netip.MustParseAddr("fe80::1").WithZone("ll-gateway-placeholder")
 
 type defaultBridgeIPAMTestCase struct {
 	name               string
@@ -387,7 +390,7 @@ func testDefaultBridgeIPAM(ctx context.Context, t *testing.T, tc defaultBridgeIP
 		defer cleanup()
 
 		host.Do(t, func() {
-			llAddr := createBridge(t, tc.bridgeName, tc.initialBridgeAddrs)
+			llAddr, _ := netip.AddrFromSlice(createBridge(t, tc.bridgeName, tc.initialBridgeAddrs))
 
 			var dArgs []string
 			if !tc.ipv4Only {
@@ -417,15 +420,15 @@ func testDefaultBridgeIPAM(ctx context.Context, t *testing.T, tc defaultBridgeIP
 			c := d.NewClientT(t)
 			defer c.Close()
 
-			insp, err := c.NetworkInspect(ctx, network.NetworkBridge, network.InspectOptions{})
+			insp, err := c.NetworkInspect(ctx, network.NetworkBridge, client.NetworkInspectOptions{})
 			assert.NilError(t, err)
 			expIPAMConfig := slices.Clone(tc.expIPAMConfig)
 			for i := range expIPAMConfig {
 				if expIPAMConfig[i].Gateway == llGwPlaceholder {
-					expIPAMConfig[i].Gateway = llAddr.String()
+					expIPAMConfig[i].Gateway = llAddr
 				}
 			}
-			assert.Check(t, is.DeepEqual(insp.IPAM.Config, expIPAMConfig))
+			assert.Check(t, is.DeepEqual(insp.IPAM.Config, expIPAMConfig, cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})))
 		})
 	})
 }
@@ -493,4 +496,32 @@ func createBridge(t *testing.T, ifName string, addrs []string) net.IP {
 		assert.NilError(t, err)
 	}
 	return llAddr
+}
+
+// TestSwarmNoNftables checks that, because swarm does not yet have nftables support,
+// it's not possible to:
+// - enable Swarm when nftables is enabled, or to
+// - restart an already Swarm enabled daemon with nftables enabled as well.
+func TestSwarmNoNftables(t *testing.T) {
+	ctx := testutil.StartSpan(baseContext, t)
+	skip.If(t, testEnv.IsRemoteDaemon)
+	skip.If(t, testEnv.IsRootless, "rootless mode doesn't support Swarm-mode")
+
+	t.Run("start", func(t *testing.T) {
+		d := daemon.New(t)
+		d.Start(t, "--firewall-backend=nftables")
+		defer d.Stop(t)
+		err := d.SwarmInitWithError(ctx, t, swarmtypes.InitRequest{AdvertiseAddr: "127.0.0.1:2377"})
+		assert.Check(t, is.ErrorContains(err, "--firewall-backend=nftables is incompatible with swarm mode"))
+	})
+
+	t.Run("restart", func(t *testing.T) {
+		d := daemon.New(t)
+		d.Start(t, "--firewall-backend=iptables")
+		defer d.Stop(t)
+		d.SwarmInit(ctx, t, swarmtypes.InitRequest{AdvertiseAddr: "127.0.0.1:2377"})
+
+		err := d.RestartWithError("--firewall-backend=nftables")
+		assert.Check(t, is.ErrorContains(err, "daemon exited during startup"))
+	})
 }

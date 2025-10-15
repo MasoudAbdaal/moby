@@ -10,6 +10,7 @@ dockerd - Enable daemon mode
 [**-b**|**--bridge**[=*BRIDGE*]]
 [**--bip**[=*BIP*]]
 [**--bip6**[=*BIP*]]
+[**--bridge-accept-fwmark**[=*[]*]]
 [**--cgroup-parent**[=*[]*]]
 [**--config-file**[=*path*]]
 [**--containerd**[=*SOCKET-PATH*]]
@@ -139,6 +140,9 @@ $ sudo dockerd --add-runtime runc=runc --add-runtime custom=/usr/local/bin/my-ru
 **--bip6**=""
   Use the provided CIDR notation IPv6 address for the default bridge network;
   Mutually exclusive of \-b
+
+**--bridge-accept-fwmark**=""
+Bridge networks will accept packets with this firewall mark/mask.
 
 **--cgroup-parent**=""
   Set parent cgroup for all containers. Default is "/docker" for fs cgroup
@@ -413,6 +417,10 @@ unix://[/path/to/socket] to use.
 
 **--tlsverify**=**true**|**false**
   Use TLS and verify the remote (daemon: verify client, client: verify daemon).
+  Default is **false**.
+
+**--allow-direct-routing**=**true**|**false**
+  Allow remote access to published ports on container IP addresses.
   Default is **false**.
 
 **--userland-proxy**=**true**|**false**

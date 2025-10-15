@@ -1,15 +1,15 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
+	"errors"
 	"io"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -39,10 +39,10 @@ func TestPause(t *testing.T) {
 
 	until := request.DaemonUnixTime(ctx, t, apiClient, testEnv)
 
-	messages, errs := apiClient.Events(ctx, events.ListOptions{
+	messages, errs := apiClient.Events(ctx, client.EventsListOptions{
 		Since:   since,
 		Until:   until,
-		Filters: filters.NewArgs(filters.Arg(string(events.ContainerEventType), cID)),
+		Filters: make(client.Filters).Add(string(events.ContainerEventType), cID),
 	})
 	assert.Check(t, is.DeepEqual([]events.Action{events.ActionPause, events.ActionUnPause}, getEventActions(t, messages, errs)))
 }
@@ -68,7 +68,7 @@ func TestPauseStopPausedContainer(t *testing.T) {
 	err := apiClient.ContainerPause(ctx, cID)
 	assert.NilError(t, err)
 
-	err = apiClient.ContainerStop(ctx, cID, containertypes.StopOptions{})
+	err = apiClient.ContainerStop(ctx, cID, client.ContainerStopOptions{})
 	assert.NilError(t, err)
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
@@ -80,7 +80,7 @@ func getEventActions(t *testing.T, messages <-chan events.Message, errs <-chan e
 	for {
 		select {
 		case err := <-errs:
-			assert.Check(t, err == nil || err == io.EOF)
+			assert.Check(t, err == nil || errors.Is(err, io.EOF))
 			return actions
 		case e := <-messages:
 			actions = append(actions, e.Action)

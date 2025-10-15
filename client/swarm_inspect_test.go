@@ -1,57 +1,49 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/swarm"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestSwarmInspectError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := NewClientWithOpts(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	_, err := client.SwarmInspect(context.Background())
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	_, err = client.SwarmInspect(context.Background())
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestSwarmInspect(t *testing.T) {
-	expectedURL := "/swarm"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			content, err := json.Marshal(swarm.Swarm{
-				ClusterInfo: swarm.ClusterInfo{
-					ID: "swarm_id",
-				},
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader(content)),
-			}, nil
-		}),
-	}
+	const expectedURL = "/swarm"
+	client, err := NewClientWithOpts(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+			return nil, err
+		}
+		content, err := json.Marshal(swarm.Swarm{
+			ClusterInfo: swarm.ClusterInfo{
+				ID: "swarm_id",
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(content)),
+		}, nil
+	}))
+	assert.NilError(t, err)
 
 	swarmInspect, err := client.SwarmInspect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if swarmInspect.ID != "swarm_id" {
-		t.Fatalf("expected `swarm_id`, got %s", swarmInspect.ID)
-	}
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(swarmInspect.ID, "swarm_id"))
 }

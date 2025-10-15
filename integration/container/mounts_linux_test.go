@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"fmt"
@@ -7,17 +7,17 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/docker/docker/api"
-	containertypes "github.com/docker/docker/api/types/container"
-	mounttypes "github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/versions"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/pkg/parsers/kernel"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/volume"
+	cerrdefs "github.com/containerd/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
+	mounttypes "github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/daemon/config"
+	"github.com/moby/moby/v2/daemon/volume"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/pkg/parsers/kernel"
 	"github.com/moby/sys/mount"
 	"github.com/moby/sys/mountinfo"
 	"gotest.tools/v3/assert"
@@ -38,8 +38,6 @@ func TestContainerNetworkMountsNoChown(t *testing.T) {
 	ctx := setupTest(t)
 
 	tmpDir := fs.NewDir(t, "network-file-mounts", fs.WithMode(0o755), fs.WithFile("nwfile", "network file bind mount", fs.WithMode(0o644)))
-	defer tmpDir.Remove()
-
 	tmpNWFileMount := tmpDir.Join("nwfile")
 
 	config := containertypes.Config{
@@ -72,7 +70,7 @@ func TestContainerNetworkMountsNoChown(t *testing.T) {
 	ctrCreate, err := cli.ContainerCreate(ctx, &config, &hostConfig, &network.NetworkingConfig{}, nil, "")
 	assert.NilError(t, err)
 	// container will exit immediately because of no tty, but we only need the start sequence to test the condition
-	err = cli.ContainerStart(ctx, ctrCreate.ID, containertypes.StartOptions{})
+	err = cli.ContainerStart(ctx, ctrCreate.ID, client.ContainerStartOptions{})
 	assert.NilError(t, err)
 
 	// Check that host-located bind mount network file did not change ownership when the container was started
@@ -197,7 +195,7 @@ func TestMountDaemonRoot(t *testing.T) {
 					}
 
 					defer func() {
-						if err := apiClient.ContainerRemove(ctx, c.ID, containertypes.RemoveOptions{Force: true}); err != nil {
+						if err := apiClient.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 							panic(err)
 						}
 					}()
@@ -226,13 +224,9 @@ func TestContainerBindMountNonRecursive(t *testing.T) {
 
 	ctx := setupTest(t)
 
-	tmpDir1 := fs.NewDir(t, "tmpdir1", fs.WithMode(0o755),
-		fs.WithDir("mnt", fs.WithMode(0o755)))
-	defer tmpDir1.Remove()
+	tmpDir1 := fs.NewDir(t, "tmpdir1", fs.WithMode(0o755), fs.WithDir("mnt", fs.WithMode(0o755)))
 	tmpDir1Mnt := filepath.Join(tmpDir1.Path(), "mnt")
-	tmpDir2 := fs.NewDir(t, "tmpdir2", fs.WithMode(0o755),
-		fs.WithFile("file", "should not be visible when NonRecursive", fs.WithMode(0o644)))
-	defer tmpDir2.Remove()
+	tmpDir2 := fs.NewDir(t, "tmpdir2", fs.WithMode(0o755), fs.WithFile("file", "should not be visible when NonRecursive", fs.WithMode(0o644)))
 
 	err := mount.Mount(tmpDir2.Path(), tmpDir1Mnt, "none", "bind,ro")
 	if err != nil {
@@ -284,9 +278,7 @@ func TestContainerVolumesMountedAsShared(t *testing.T) {
 	ctx := setupTest(t)
 
 	// Prepare a source directory to bind mount
-	tmpDir1 := fs.NewDir(t, "volume-source", fs.WithMode(0o755),
-		fs.WithDir("mnt1", fs.WithMode(0o755)))
-	defer tmpDir1.Remove()
+	tmpDir1 := fs.NewDir(t, "volume-source", fs.WithMode(0o755), fs.WithDir("mnt1", fs.WithMode(0o755)))
 	tmpDir1Mnt := filepath.Join(tmpDir1.Path(), "mnt1")
 
 	// Convert this directory into a shared mount point so that we do
@@ -336,16 +328,12 @@ func TestContainerVolumesMountedAsSlave(t *testing.T) {
 	ctx := testutil.StartSpan(baseContext, t)
 
 	// Prepare a source directory to bind mount
-	tmpDir1 := fs.NewDir(t, "volume-source", fs.WithMode(0o755),
-		fs.WithDir("mnt1", fs.WithMode(0o755)))
-	defer tmpDir1.Remove()
+	tmpDir1 := fs.NewDir(t, "volume-source", fs.WithMode(0o755), fs.WithDir("mnt1", fs.WithMode(0o755)))
 	tmpDir1Mnt := filepath.Join(tmpDir1.Path(), "mnt1")
 
 	// Prepare a source directory with file in it. We will bind mount this
 	// directory and see if file shows up.
-	tmpDir2 := fs.NewDir(t, "volume-source2", fs.WithMode(0o755),
-		fs.WithFile("slave-testfile", "Test", fs.WithMode(0o644)))
-	defer tmpDir2.Remove()
+	tmpDir2 := fs.NewDir(t, "volume-source2", fs.WithMode(0o755), fs.WithFile("slave-testfile", "Test", fs.WithMode(0o644)))
 
 	// Convert this directory into a shared mount point so that we do
 	// not rely on propagation properties of parent mount.
@@ -447,7 +435,7 @@ func TestContainerVolumeAnonymous(t *testing.T) {
 		// when used, which we use as indicator that the driver was passed
 		// through. We should have a cleaner way for this, but that would
 		// require a custom volume plugin to be installed.
-		assert.Check(t, is.ErrorType(err, errdefs.IsNotFound))
+		assert.Check(t, is.ErrorType(err, cerrdefs.IsNotFound))
 		assert.Check(t, is.ErrorContains(err, fmt.Sprintf(`plugin %q not found`, testNonExistingPlugin)))
 	})
 }
@@ -509,8 +497,8 @@ func TestContainerBindMountReadOnlyDefault(t *testing.T) {
 
 		{clientVersion: "1.43", expectedOut: nonRecursive, name: "older than 1.44 should be non-recursive by default"},
 
-		// TODO: Remove when MinSupportedAPIVersion >= 1.44
-		{clientVersion: api.MinSupportedAPIVersion, expectedOut: nonRecursive, name: "minimum API should be non-recursive by default"},
+		// TODO: Remove when DefaultMinAPIVersion >= 1.44
+		{clientVersion: config.MinAPIVersion, expectedOut: nonRecursive, name: "minimum API should be non-recursive by default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			apiClient := testEnv.APIClient()

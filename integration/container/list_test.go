@@ -1,17 +1,20 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/request"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
+	"gotest.tools/v3/poll"
 	"gotest.tools/v3/skip"
 )
 
@@ -27,12 +30,12 @@ func TestContainerList(t *testing.T) {
 	containers := make([]string, num)
 	for i := range num {
 		id := container.Create(ctx, t, apiClient)
-		defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+		defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 		containers[i] = id
 	}
 
 	// list them and verify correctness
-	containerList, err := apiClient.ContainerList(ctx, containertypes.ListOptions{All: true})
+	containerList, err := apiClient.ContainerList(ctx, client.ContainerListOptions{All: true})
 	assert.NilError(t, err)
 	assert.Assert(t, is.Len(containerList, num))
 	for i := range num {
@@ -60,11 +63,11 @@ func TestContainerList_Annotations(t *testing.T) {
 		t.Run(fmt.Sprintf("run with version v%s", tc.apiVersion), func(t *testing.T) {
 			apiClient := request.NewAPIClient(t, client.WithVersion(tc.apiVersion))
 			id := container.Create(ctx, t, apiClient, container.WithAnnotations(annotations))
-			defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+			defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 
-			containers, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+			containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 				All:     true,
-				Filters: filters.NewArgs(filters.Arg("id", id)),
+				Filters: make(client.Filters).Add("id", id),
 			})
 			assert.NilError(t, err)
 			assert.Assert(t, is.Len(containers, 1))
@@ -83,9 +86,9 @@ func TestContainerList_Filter(t *testing.T) {
 	next := container.Create(ctx, t, apiClient)
 
 	defer func() {
-		container.Remove(ctx, t, apiClient, prev, containertypes.RemoveOptions{Force: true})
-		container.Remove(ctx, t, apiClient, top, containertypes.RemoveOptions{Force: true})
-		container.Remove(ctx, t, apiClient, next, containertypes.RemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, prev, client.ContainerRemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, top, client.ContainerRemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, next, client.ContainerRemoveOptions{Force: true})
 	}()
 
 	containerIDs := func(containers []containertypes.Summary) []string {
@@ -98,9 +101,9 @@ func TestContainerList_Filter(t *testing.T) {
 
 	t.Run("since", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		results, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+		results, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 			All:     true,
-			Filters: filters.NewArgs(filters.Arg("since", top)),
+			Filters: make(client.Filters).Add("since", top),
 		})
 		assert.NilError(t, err)
 		assert.Check(t, is.Contains(containerIDs(results), next))
@@ -108,9 +111,9 @@ func TestContainerList_Filter(t *testing.T) {
 
 	t.Run("before", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		results, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+		results, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 			All:     true,
-			Filters: filters.NewArgs(filters.Arg("before", top)),
+			Filters: make(client.Filters).Add("before", top),
 		})
 		assert.NilError(t, err)
 		assert.Check(t, is.Contains(containerIDs(results), prev))
@@ -127,9 +130,9 @@ func TestContainerList_ImageManifestPlatform(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	id := container.Create(ctx, t, apiClient)
-	defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 
-	containers, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+	containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 		All: true,
 	})
 	assert.NilError(t, err)
@@ -141,5 +144,59 @@ func TestContainerList_ImageManifestPlatform(t *testing.T) {
 		// depend on the platform on which we're running the test.
 		assert.Equal(t, ctr.ImageManifestDescriptor.Platform.OS, testEnv.DaemonInfo.OSType)
 		assert.Check(t, ctr.ImageManifestDescriptor.Platform.Architecture != "")
+	}
+}
+
+func pollForHealthStatusSummary(ctx context.Context, apiClient client.APIClient, containerID string, healthStatus containertypes.HealthStatus) func(log poll.LogT) poll.Result {
+	return func(log poll.LogT) poll.Result {
+		containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
+			All:     true,
+			Filters: make(client.Filters).Add("id", containerID),
+		})
+		if err != nil {
+			return poll.Error(err)
+		}
+		total := 0
+		version := apiClient.ClientVersion()
+		for _, ctr := range containers {
+			if ctr.Health == nil && versions.LessThan(version, "1.52") {
+				total++
+			} else if ctr.Health != nil && ctr.Health.Status == healthStatus && versions.GreaterThanOrEqualTo(version, "1.52") {
+				total++
+			}
+		}
+
+		if total == len(containers) {
+			return poll.Success()
+		}
+
+		return poll.Continue("waiting for container to become %s", healthStatus)
+	}
+}
+
+func TestContainerList_HealthSummary(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows", "FIXME")
+	ctx := setupTest(t)
+	testcases := []struct {
+		apiVersion string
+	}{
+		{apiVersion: "1.51"},
+		{apiVersion: "1.52"},
+	}
+
+	for _, tc := range testcases {
+		t.Run(fmt.Sprintf("run with version v%s", tc.apiVersion), func(t *testing.T) {
+			apiClient := request.NewAPIClient(t, client.WithVersion(tc.apiVersion))
+
+			cID := container.Run(ctx, t, apiClient, container.WithTty(true), container.WithWorkingDir("/foo"), func(c *container.TestContainerConfig) {
+				c.Config.Healthcheck = &containertypes.HealthConfig{
+					Test:     []string{"CMD-SHELL", "if [ \"$PWD\" = \"/foo\" ]; then exit 0; else exit 1; fi;"},
+					Interval: 50 * time.Millisecond,
+					Retries:  3,
+				}
+			})
+
+			poll.WaitOn(t, pollForHealthStatusSummary(ctx, apiClient, cID, containertypes.Healthy))
+		})
 	}
 }

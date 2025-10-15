@@ -1,4 +1,4 @@
-package client // import "github.com/docker/docker/client"
+package client
 
 import (
 	"bytes"
@@ -8,19 +8,18 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestImageLoadError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := NewClientWithOpts(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	_, err := client.ImageLoad(context.Background(), nil, ImageLoadWithQuiet(true))
-	assert.Check(t, is.ErrorType(err, errdefs.IsSystem))
+	_, err = client.ImageLoad(context.Background(), nil, ImageLoadWithQuiet(true))
+	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestImageLoad(t *testing.T) {
@@ -82,18 +81,17 @@ func TestImageLoad(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.doc, func(t *testing.T) {
-			client := &Client{
-				client: newMockClient(func(req *http.Request) (*http.Response, error) {
-					assert.Check(t, is.Equal(req.URL.Path, expectedURL))
-					assert.Check(t, is.Equal(req.Header.Get("Content-Type"), expectedContentType))
-					assert.Check(t, is.DeepEqual(req.URL.Query(), tc.expectedQueryParams))
-					return &http.Response{
-						StatusCode: http.StatusOK,
-						Body:       io.NopCloser(bytes.NewReader([]byte(expectedOutput))),
-						Header:     http.Header{"Content-Type": []string{tc.responseContentType}},
-					}, nil
-				}),
-			}
+			client, err := NewClientWithOpts(WithMockClient(func(req *http.Request) (*http.Response, error) {
+				assert.Check(t, assertRequest(req, http.MethodPost, expectedURL))
+				assert.Check(t, is.Equal(req.Header.Get("Content-Type"), expectedContentType))
+				assert.Check(t, is.DeepEqual(req.URL.Query(), tc.expectedQueryParams))
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader([]byte(expectedOutput))),
+					Header:     http.Header{"Content-Type": []string{tc.responseContentType}},
+				}, nil
+			}))
+			assert.NilError(t, err)
 
 			input := bytes.NewReader([]byte(expectedInput))
 			imageLoadResponse, err := client.ImageLoad(context.Background(), input,

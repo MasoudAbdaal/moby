@@ -1,22 +1,35 @@
 package networking
 
 import (
+	"os"
 	"testing"
 
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/internal/testutils/networking"
-	"github.com/docker/docker/testutil/request"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/testutils/networking"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
+const defaultFirewallBackend = "iptables"
+
 func TestInfoFirewallBackend(t *testing.T) {
 	ctx := setupTest(t)
-	c := testEnv.APIClient()
 
-	expDriver := "iptables"
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	t.Cleanup(func() { d.Stop(t) })
+
+	c := d.NewClientT(t)
+	t.Cleanup(func() { c.Close() })
+
+	expDriver := defaultFirewallBackend
+	if val := os.Getenv("DOCKER_FIREWALL_BACKEND"); val != "" {
+		expDriver = val
+	}
 	if !testEnv.IsRootless() && networking.FirewalldRunning() {
-		expDriver = "iptables+firewalld"
+		expDriver += "+firewalld"
 	}
 	info, err := c.Info(ctx)
 	assert.NilError(t, err)

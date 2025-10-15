@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/integration/internal/container"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/poll"
 	"gotest.tools/v3/skip"
@@ -135,7 +135,7 @@ func TestHealthStartInterval(t *testing.T) {
 		if err != nil {
 			return poll.Error(err)
 		}
-		if inspect.State.Health.Status != "healthy" {
+		if inspect.State.Health.Status != containertypes.Healthy {
 			if len(inspect.State.Health.Log) > 0 {
 				t.Log(inspect.State.Health.Log[len(inspect.State.Health.Log)-1])
 			}
@@ -188,7 +188,7 @@ func pollForHealthCheckLog(ctx context.Context, client client.APIClient, contain
 	}
 }
 
-func pollForHealthStatus(ctx context.Context, client client.APIClient, containerID string, healthStatus string) func(log poll.LogT) poll.Result {
+func pollForHealthStatus(ctx context.Context, client client.APIClient, containerID string, healthStatus containertypes.HealthStatus) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
 		inspect, err := client.ContainerInspect(ctx, containerID)
 

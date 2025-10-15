@@ -2,6 +2,7 @@ package base
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/gc"
 	"github.com/containerd/platforms"
-	"github.com/hashicorp/go-multierror"
 	"github.com/moby/buildkit/cache"
 	"github.com/moby/buildkit/cache/metadata"
 	"github.com/moby/buildkit/client"
@@ -222,21 +222,21 @@ func (w *Worker) GarbageCollect(ctx context.Context) error {
 }
 
 func (w *Worker) Close() error {
-	var rerr error
+	var errs []error
 	if err := w.MetadataStore.Close(); err != nil {
-		rerr = multierror.Append(rerr, err)
+		errs = append(errs, err)
 	}
 	for _, provider := range w.NetworkProviders {
 		if err := provider.Close(); err != nil {
-			rerr = multierror.Append(rerr, err)
+			errs = append(errs, err)
 		}
 	}
 	if w.ResourceMonitor != nil {
 		if err := w.ResourceMonitor.Close(); err != nil {
-			rerr = multierror.Append(rerr, err)
+			errs = append(errs, err)
 		}
 	}
-	return rerr
+	return stderrors.Join(errs...)
 }
 
 func (w *Worker) ContentStore() *containerdsnapshot.Store {
@@ -495,7 +495,6 @@ func (w *Worker) FromRemote(ctx context.Context, remote *solver.Remote) (ref cac
 	if len(remote.Descriptors) > 0 {
 		var eg errgroup.Group
 		for _, desc := range remote.Descriptors {
-			desc := desc
 			eg.Go(func() error {
 				if _, err := remote.Provider.Info(ctx, desc.Digest); err != nil {
 					return err
